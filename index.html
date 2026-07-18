@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Weather History</title>
+<title>Weather Station</title>
 <link rel="icon" type="image/svg+xml" href="static/favicon.svg">
 <link rel="stylesheet" href="static/uPlot.min.css">
 <style>
@@ -204,8 +204,8 @@
         </svg>
       </div>
       <div>
-        <h1>Weather History</h1>
-        <div class="subtitle" id="subtitle">Loading database&hellip;</div>
+        <h1>Weather Station</h1>
+        <div class="subtitle" id="subtitle">Loading&hellip;</div>
       </div>
     </div>
     <div class="spacer"></div>
@@ -717,7 +717,7 @@ async function main() {
     const s = new Date(lo * 1000), e = new Date(hi * 1000);
     const nice = d => d.toLocaleDateString("en-US", { timeZone: "UTC", year: "numeric", month: "short", day: "numeric" });
     document.getElementById("subtitle").innerHTML =
-      `${nice(s)} – ${nice(e)} &middot; queried directly from <code>weather.db</code> in your browser`;
+      `Live conditions &amp; history since ${nice(s)} &middot; updates every 15 minutes`;
 
     const sel = document.getElementById("metric");
     Object.entries(METRICS).forEach(([k, m]) => {
