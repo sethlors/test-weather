@@ -23,7 +23,7 @@ matching the template's placeholders, and writes a full (~80-column) SQLite db.
 
 ```
 Detail-All.htx (template)  ─┐
-                            ├─► build_weather_db.py ─► full weather.db ─► make_lean_db.py ─► weather.db (this repo, ~4.5 MB)
+                            ├─► build_weather_db.py ─► full weather.db ─► make_lean_db.py ─► weather.db (~4.5 MB, lives on the weather-data branch)
 git history of Detail-All.htm ┘
 ```
 
@@ -32,7 +32,7 @@ git history of Detail-All.htm ┘
 | Path | What it is |
 |------|-----------|
 | `index.html` | The dashboard (loads sql.js + uPlot, queries `weather.db`) |
-| `weather.db` | Lean SQLite db: `ts` + 12 metrics, ~56k rows |
+| `weather.db` | Lean SQLite db (`ts` + 12 metrics, ~56k rows) — **not tracked on `main`**; it's maintained on the `weather-data` branch and baked into the Pages artifact at deploy |
 | `static/` | Vendored `sql.js` (wasm) and `uPlot` — all self-hosted |
 | `scripts/build_weather_db.py` | Full extractor from `Detail-All.htm` git history (one-time build) |
 | `scripts/make_lean_db.py` | Full db → lean web db |
@@ -64,10 +64,14 @@ wall-clock fields.
 
 ## Running locally
 
-Because the whole db is loaded up front (no HTTP range requests needed), a plain
-static server works:
+The db isn't tracked on `main`, so grab the current one from the `weather-data`
+branch first. Then, because the whole db is loaded up front (no HTTP range
+requests needed), a plain static server works:
 
 ```bash
+git fetch origin weather-data
+git show origin/weather-data:weather.db > weather.db   # gitignored; local dev only
+
 python3 -m http.server 8000
 # open http://localhost:8000
 ```
