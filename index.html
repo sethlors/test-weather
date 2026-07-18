@@ -266,7 +266,8 @@ const METRICS = {
   barometer:        { label: "Barometer",           unit: "inHg",  accent: ["#4a3aa7", "#9085e9"] },
   windSpeed:        { label: "Wind Speed",          unit: "mph",   accent: ["#1baf7a", "#199e70"] },
   rainRate:         { label: "Rain Rate",           unit: "in/hr", accent: ["#2a78d6", "#3987e5"] },
-  dailyRain:        { label: "Day Rain Total",      unit: "in",    accent: ["#2a78d6", "#3987e5"] },
+  // cumulative day counter: charted as daily-total bars (MAX per day), not an averaged line
+  dailyRain:        { label: "Day Rain Total",      unit: "in",    accent: ["#2a78d6", "#3987e5"], dailyTotal: true },
   stormRain:        { label: "Storm Rain Total",    unit: "in",    accent: ["#2a78d6", "#3987e5"] },
   monthlyRain:      { label: "Month Rain Total",    unit: "in",    accent: ["#2a78d6", "#3987e5"] },
   totalRain:        { label: "Year Rain Total",     unit: "in",    accent: ["#2a78d6", "#3987e5"] },
@@ -347,6 +348,13 @@ function pickResolution(startSec, endSec) {
 async function getSeries(metric, startSec, endSec, resolution) {
   const col = '"' + metric + '"';
   const where = `ts BETWEEN ${startSec} AND ${endSec} AND ${col} IS NOT NULL`;
+  if (METRICS[metric].dailyTotal) {
+    // cumulative counter that resets daily: the day's total is the max, one bar per day
+    const rows = await q(
+      `SELECT (ts/86400)*86400 AS b, MAX(${col}) AS mx FROM readings WHERE ${where} GROUP BY b ORDER BY b`
+    );
+    return { t: rows.map(r => r.b), avg: rows.map(r => r.mx), min: null, max: null, bars: true };
+  }
   if (resolution === "raw") {
     const rows = await q(`SELECT ts AS t, ${col} AS v FROM readings WHERE ${where} ORDER BY ts`);
     return { t: rows.map(r => r.t), avg: rows.map(r => r.v), min: null, max: null };
@@ -360,7 +368,7 @@ async function getSeries(metric, startSec, endSec, resolution) {
 }
 
 /* ---------- tooltip plugin ---------- */
-function tooltipPlugin(unit, hasBand, accent) {
+function tooltipPlugin(unit, hasBand, accent, dateOnly) {
   let tip, over;
   function fmt(v) { return v == null ? "–" : (Math.round(v * 100) / 100).toLocaleString(); }
   return {
@@ -379,8 +387,10 @@ function tooltipPlugin(unit, hasBand, accent) {
         const v = u.data[1][idx];
         if (v == null) { tip.style.opacity = 0; return; }
         const d = new Date(t * 1000);
-        const time = d.toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric",
-          hour: "numeric", minute: "2-digit" });
+        const time = dateOnly
+          ? d.toLocaleDateString("en-US", { timeZone: "UTC", weekday: "short", month: "short", day: "numeric" })
+          : d.toLocaleString("en-US", { timeZone: "UTC", month: "short", day: "numeric",
+              hour: "numeric", minute: "2-digit" });
         let html = `<div class="tt-time">${time}</div>`
           + `<div class="tt-row"><span class="tt-dot" style="background:${accent}"></span><span class="tt-main">${fmt(v)} ${unit}</span></div>`;
         if (hasBand && u.data[2] && u.data[3]) {
@@ -390,6 +400,44 @@ function tooltipPlugin(unit, hasBand, accent) {
         tip.style.left = left + "px";
         tip.style.top = top + "px";
         tip.style.opacity = 1;
+      },
+    },
+  };
+}
+
+// Custom bar renderer: rounded-top bars from the zero baseline, drawn in a
+// draw hook (this uPlot build has no paths.bars). 2px surface gap between bars.
+function barsPlugin(accent) {
+  return {
+    hooks: {
+      draw: u => {
+        const ctx = u.ctx;
+        const ts = u.data[0], vs = u.data[1];
+        if (!ts.length) return;
+        const y0 = u.valToPos(0, "y", true);
+        // bar width from the smallest x step, minus a 2px gap each side
+        let step = Infinity;
+        for (let i = 1; i < ts.length; i++) step = Math.min(step, u.valToPos(ts[i], "x", true) - u.valToPos(ts[i - 1], "x", true));
+        if (!isFinite(step)) step = u.bbox.width / 2;
+        const w = Math.max(3, step - 4);
+        const r = Math.min(4, w / 2);
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(u.bbox.left, u.bbox.top, u.bbox.width, u.bbox.height);
+        ctx.clip();
+        ctx.fillStyle = accent;
+        for (let i = 0; i < ts.length; i++) {
+          if (vs[i] == null) continue;
+          const x = u.valToPos(ts[i], "x", true) - w / 2;
+          const yv = u.valToPos(vs[i], "y", true);
+          const h = y0 - yv;
+          if (h <= 0) continue;
+          ctx.beginPath();
+          if (ctx.roundRect) ctx.roundRect(x, yv, w, h, [r, r, 0, 0]);
+          else ctx.rect(x, yv, w, h);
+          ctx.fill();
+        }
+        ctx.restore();
       },
     },
   };
@@ -418,13 +466,16 @@ function drawChart(data, meta, hasBand) {
     return g;
   }
 
+  const bars = !!data.bars;
   const series = [
     {},
-    {
-      label: `${meta.label} (${meta.unit})`,
-      stroke: accent, width: 2, fill: hasBand ? undefined : fillGrad,
-      points: { show: data.t.length < 220, size: 5, stroke: accent, fill: cssVar("--surface") },
-    },
+    bars
+      ? { label: `${meta.label} (${meta.unit})`, stroke: "transparent", width: 0, points: { show: false } }
+      : {
+          label: `${meta.label} (${meta.unit})`,
+          stroke: accent, width: 2, fill: hasBand ? undefined : fillGrad,
+          points: { show: data.t.length < 220, size: 5, stroke: accent, fill: cssVar("--surface") },
+        },
   ];
   const arr = [data.t, data.avg];
   if (hasBand && data.min && data.max) {
@@ -455,13 +506,14 @@ function drawChart(data, meta, hasBand) {
           return splits.map(v => v.toFixed(dec));
         } },
     ],
-    scales: { x: { time: true } },
+    scales: { x: { time: true }, y: bars ? { range: (u, mn, mx) => [0, Math.max(mx, 0.01) * 1.1] } : {} },
     cursor: {
       drag: { x: true, y: false },
-      points: { size: 8, width: 2, stroke: accent, fill: cssVar("--surface") },
+      points: { size: 8, width: 2, stroke: accent, fill: bars ? accent : cssVar("--surface") },
       x: true, y: false,
     },
-    plugins: [tooltipPlugin(meta.unit, hasBand, accent)],
+    plugins: bars ? [barsPlugin(accent), tooltipPlugin(meta.unit, false, accent, true)]
+                  : [tooltipPlugin(meta.unit, hasBand, accent)],
   };
   chart = new uPlot(opts, arr, el);
 }
@@ -590,6 +642,7 @@ async function loadSeries() {
     `<span class="swatch" style="background:${accent}"></span>${meta.label} <span style="color:var(--muted);font-weight:500">(${meta.unit})</span>`;
 
   document.getElementById("resHint").textContent = (
+    meta.dailyTotal ? "One bar per day = that day's rain total" :
     res === "raw" ? "Full 5-minute resolution" :
     res === "hourly" ? "Hourly averages · band = min/max per hour" :
     "Daily averages · band = min/max per day") + " · drag to zoom, double-click to reset";
@@ -598,8 +651,33 @@ async function loadSeries() {
   state.lastData = data;
   state.lastMeta = { ...meta, key: metric };
   document.getElementById("csvBtn").hidden = !data.t.length;
-  drawChart(data, meta, res !== "raw");
+  drawChart(data, meta, res !== "raw" && !meta.dailyTotal);
   renderStats(data, meta.unit, accent);
+
+  // shareable URL state
+  const active = document.querySelector(".segmented button.active");
+  const frag = `#m=${metric}&s=${startV}&e=${endV}` + (active ? `&p=${active.dataset.days}` : "");
+  history.replaceState(null, "", frag);
+}
+
+// restore state from a shared URL; returns true if applied
+function applyHashState() {
+  if (!location.hash) return false;
+  const p = new URLSearchParams(location.hash.slice(1));
+  const m = p.get("m"), s = p.get("s"), e = p.get("e"), preset = p.get("p");
+  if (!m || !METRICS[m]) return false;
+  document.getElementById("metric").value = m;
+  if (preset && document.querySelector(`.segmented button[data-days="${preset}"]`)) {
+    applyPreset(preset === "all" ? "all" : Number(preset));
+    return true;
+  }
+  if (s && e) {
+    document.getElementById("start").value = s;
+    document.getElementById("end").value = e;
+    loadSeries();
+    return true;
+  }
+  return false;
 }
 
 function setPresetActive(days) {
@@ -653,7 +731,7 @@ async function main() {
     document.getElementById("csvBtn").onclick = exportCsv;
     buildPresets();
     renderNow();
-    applyPreset(7);
+    if (!applyHashState()) applyPreset(7);
     window.addEventListener("resize", () => {
       if (chart) chart.setSize({ width: document.getElementById("chart").clientWidth, height: 420 });
     });
