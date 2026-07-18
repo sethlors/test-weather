@@ -161,6 +161,30 @@
 
   .status { font-size: 13px; color: var(--muted); padding: 4px 2px; }
 
+  /* ---- current conditions strip ---- */
+  .now { padding: 14px 18px; margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 6px 26px; align-items: center; }
+  .now .n-head { display: flex; flex-direction: column; gap: 2px; min-width: 130px; }
+  .now .n-title { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+  .now .n-title .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 0 rgba(12,163,12,.5); animation: pulse 2.4s infinite; }
+  @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(12,163,12,.45); } 70% { box-shadow: 0 0 0 7px rgba(12,163,12,0); } 100% { box-shadow: 0 0 0 0 rgba(12,163,12,0); } }
+  .now .n-time { font-size: 12px; color: var(--muted); }
+  .now .n-item { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 6px 10px; margin: -6px -10px; border-radius: 9px; transition: background .12s; }
+  .now .n-item:hover { background: var(--surface-2); }
+  .now .n-item .ico { width: 30px; height: 30px; border-radius: 8px; display: grid; place-items: center; flex: none; }
+  .now .n-item .ico svg { width: 17px; height: 17px; }
+  .now .n-item .n-label { font-size: 11px; color: var(--muted); }
+  .now .n-item .n-val { font-size: 15.5px; font-weight: 640; font-variant-numeric: tabular-nums; letter-spacing: -0.01em; }
+  .now .n-item .n-val .u { font-size: 11.5px; font-weight: 500; color: var(--ink-2); margin-left: 2px; }
+
+  .btn {
+    font: inherit; font-size: 12.5px; font-weight: 550; padding: 6px 12px; border-radius: 8px;
+    border: 1px solid var(--border); background: var(--surface-2); color: var(--ink-2);
+    cursor: pointer; display: inline-flex; align-items: center; gap: 6px; transition: background .12s, color .12s;
+  }
+  .btn:hover { background: var(--surface); color: var(--ink); }
+  .btn svg { width: 13px; height: 13px; }
+  .chart-tools { display: flex; align-items: center; gap: 12px; }
+
   @media (max-width: 720px) {
     .kpis { grid-template-columns: 1fr 1fr; }
     select { min-width: 0; }
@@ -188,6 +212,8 @@
     <button class="theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle color theme"></button>
   </header>
 
+  <div class="card now" id="nowPanel" hidden></div>
+
   <div class="card controls">
     <div class="field">
       <span class="flabel">Metric</span>
@@ -212,7 +238,13 @@
   <div class="card chart-card">
     <div class="chart-head">
       <div class="chart-title" id="chartTitle"><span class="swatch"></span>&nbsp;</div>
-      <div class="res-hint" id="resHint"><span class="status" id="status">Connecting to weather.db&hellip;</span></div>
+      <div class="chart-tools">
+        <div class="res-hint" id="resHint"><span class="status" id="status">Connecting to weather.db&hellip;</span></div>
+        <button class="btn" id="csvBtn" title="Download the charted series as CSV" hidden>
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>
+          CSV
+        </button>
+      </div>
     </div>
     <div id="chart" class="loading"></div>
   </div>
@@ -240,8 +272,19 @@ const METRICS = {
   totalRain:        { label: "Year Rain Total",     unit: "in",    accent: ["#2a78d6", "#3987e5"] },
 };
 
-const state = { db: null, dbStart: null, dbEnd: null };
+const state = { db: null, dbStart: null, dbEnd: null, lastData: null, lastMeta: null };
 let chart = null;
+
+// icons for the current-conditions strip
+const NOW_ICONS = {
+  outsideTemp:     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14 14.8V5a2 2 0 1 0-4 0v9.8a4 4 0 1 0 4 0z"/></svg>',
+  outsideHumidity: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3s6 6.3 6 10.5a6 6 0 1 1-12 0C6 9.3 12 3 12 3z"/></svg>',
+  windSpeed:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8h9a3 3 0 1 0-3-3M3 12h13a3 3 0 1 1-3 3M3 16h5"/></svg>',
+  barometer:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 12l3.5-3.5M12 7v1M17 12h-1M7 12h1"/></svg>',
+  rainRate:        '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 13a5 5 0 1 1 1.4-9.8A6 6 0 0 1 20 6a4 4 0 0 1-.5 7"/><path d="M8 17l-1.5 3M13 17l-1.5 3M18 17l-1.5 3"/></svg>',
+  dailyRain:       '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h14M7 4c0 6 1 9 5 9s5-3 5-9M12 13v7M8 20h8"/></svg>',
+  outsideDewPt:    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M8 4s3.5 3.8 3.5 6.2a3.5 3.5 0 1 1-7 0C4.5 7.8 8 4 8 4z"/><path d="M17 12s2.8 3 2.8 5a2.8 2.8 0 1 1-5.6 0c0-2 2.8-5 2.8-5z"/></svg>',
+};
 
 /* ---------- theme ---------- */
 const SUN = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>';
@@ -256,7 +299,7 @@ function applyTheme(t) {
   document.documentElement.setAttribute("data-theme", t);
   try { localStorage.setItem("wx-theme", t); } catch (e) {}
   document.getElementById("themeToggle").innerHTML = t === "dark" ? SUN : MOON;
-  if (chart) loadSeries();
+  if (chart) { loadSeries(); renderNow(); }
 }
 function initTheme() {
   let saved = null;
@@ -405,7 +448,12 @@ function drawChart(data, meta, hasBand) {
         font: "12px system-ui, sans-serif" },
       { stroke: fg, size: 52, grid: { stroke: grid, width: 1 }, ticks: { stroke: axis, width: 1, size: 5 },
         font: "12px system-ui, sans-serif",
-        values: (u, splits) => splits.map(v => (Math.round(v * 10) / 10)) },
+        // enough decimals that adjacent ticks never collapse to the same label
+        values: (u, splits) => {
+          const incr = splits.length > 1 ? Math.abs(splits[1] - splits[0]) : 1;
+          const dec = Math.max(0, Math.min(4, Math.ceil(-Math.log10(incr)) + (Number.isInteger(incr * 100) ? 0 : 1)));
+          return splits.map(v => v.toFixed(dec));
+        } },
     ],
     scales: { x: { time: true } },
     cursor: {
@@ -458,9 +506,13 @@ function renderStats(data, unit, accent) {
   let sub = "";
   if (prev != null) {
     const d = last - prev;
-    const dir = d > 0 ? "up" : d < 0 ? "down" : "";
-    const icon = d > 0 ? ARROW_UP : d < 0 ? ARROW_DN : "";
-    sub = `<span class="delta ${dir}">${icon}${fmtNum(Math.abs(d))} ${unit}</span><span>vs previous</span>`;
+    if (Math.abs(d) < 0.005) {
+      sub = `<span>No change vs previous</span>`;
+    } else {
+      const dir = d > 0 ? "up" : "down";
+      const icon = d > 0 ? ARROW_UP : ARROW_DN;
+      sub = `<span class="delta ${dir}">${icon}${fmtNum(Math.abs(d))} ${unit}</span><span>vs previous</span>`;
+    }
   }
 
   el.innerHTML =
@@ -468,6 +520,58 @@ function renderStats(data, unit, accent) {
     tile("Minimum", fmtNum(min), unit) +
     tile("Average", fmtNum(avg), unit) +
     tile("Maximum", fmtNum(max), unit);
+}
+
+/* ---------- current conditions strip ---------- */
+function renderNow() {
+  const rows = q("SELECT * FROM readings ORDER BY ts DESC LIMIT 1");
+  if (!rows.length) return;
+  const r = rows[0];
+  const el = document.getElementById("nowPanel");
+  const when = new Date(r.ts * 1000).toLocaleString("en-US", { timeZone: "UTC",
+    month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  const dark = isDark() ? 1 : 0;
+  const items = ["outsideTemp", "outsideHumidity", "windSpeed", "barometer", "rainRate", "dailyRain", "outsideDewPt"]
+    .filter(k => r[k] != null)
+    .map(k => {
+      const m = METRICS[k];
+      const c = m.accent[dark];
+      return `<div class="n-item" data-metric="${k}" title="Show ${m.label} history" role="button" tabindex="0">
+        <span class="ico" style="color:${c};background:${hexA(c, 0.14)}">${NOW_ICONS[k] || ""}</span>
+        <span><span class="n-label">${m.label.replace("Outside ", "")}</span><br>
+        <span class="n-val">${fmtNum(r[k])}<span class="u">${m.unit}</span></span></span>
+      </div>`;
+    }).join("");
+  el.innerHTML = `<div class="n-head">
+      <span class="n-title"><span class="pulse"></span>Current conditions</span>
+      <span class="n-time">as of ${when}</span>
+    </div>` + items;
+  el.hidden = false;
+  el.querySelectorAll(".n-item").forEach(item => {
+    const go = () => { document.getElementById("metric").value = item.dataset.metric; loadSeries(); };
+    item.onclick = go;
+    item.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } };
+  });
+}
+
+/* ---------- CSV export of the charted series ---------- */
+function exportCsv() {
+  const d = state.lastData, meta = state.lastMeta;
+  if (!d || !meta) return;
+  const hasBand = !!(d.min && d.max);
+  const head = ["timestamp_utc", meta.key + (hasBand ? "_avg" : "")].concat(hasBand ? [meta.key + "_min", meta.key + "_max"] : []);
+  const lines = [head.join(",")];
+  for (let i = 0; i < d.t.length; i++) {
+    const row = [new Date(d.t[i] * 1000).toISOString(), d.avg[i]];
+    if (hasBand) row.push(d.min[i], d.max[i]);
+    lines.push(row.join(","));
+  }
+  const blob = new Blob([lines.join("\n")], { type: "text/csv" });
+  const a = document.createElement("a");
+  a.href = URL.createObjectURL(blob);
+  a.download = `${meta.key}_${document.getElementById("start").value}_${document.getElementById("end").value}.csv`;
+  a.click();
+  URL.revokeObjectURL(a.href);
 }
 
 async function loadSeries() {
@@ -485,12 +589,15 @@ async function loadSeries() {
   document.getElementById("chartTitle").innerHTML =
     `<span class="swatch" style="background:${accent}"></span>${meta.label} <span style="color:var(--muted);font-weight:500">(${meta.unit})</span>`;
 
-  document.getElementById("resHint").textContent =
+  document.getElementById("resHint").textContent = (
     res === "raw" ? "Full 5-minute resolution" :
-    res === "hourly" ? "Hourly averages · shaded band = min/max per hour" :
-    "Daily averages · shaded band = min/max per day";
+    res === "hourly" ? "Hourly averages · band = min/max per hour" :
+    "Daily averages · band = min/max per day") + " · drag to zoom, double-click to reset";
   document.getElementById("chart").classList.add("loading");
   const data = await getSeries(metric, startSec, endSec, res);
+  state.lastData = data;
+  state.lastMeta = { ...meta, key: metric };
+  document.getElementById("csvBtn").hidden = !data.t.length;
   drawChart(data, meta, res !== "raw");
   renderStats(data, meta.unit, accent);
 }
@@ -543,7 +650,9 @@ async function main() {
     sel.onchange = loadSeries;
     document.getElementById("start").onchange = clearPresetsOnManual;
     document.getElementById("end").onchange = clearPresetsOnManual;
+    document.getElementById("csvBtn").onclick = exportCsv;
     buildPresets();
+    renderNow();
     applyPreset(7);
     window.addEventListener("resize", () => {
       if (chart) chart.setSize({ width: document.getElementById("chart").clientWidth, height: 420 });
