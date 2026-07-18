@@ -6,6 +6,7 @@
 <title>Weather Station</title>
 <link rel="icon" type="image/svg+xml" href="static/favicon.svg">
 <link rel="stylesheet" href="static/uPlot.min.css">
+<link rel="stylesheet" href="static/leaflet.css">
 <style>
   /* ---- design tokens (from validated data-viz reference palette) ---- */
   :root {
@@ -185,10 +186,50 @@
   .btn svg { width: 13px; height: 13px; }
   .chart-tools { display: flex; align-items: center; gap: 12px; }
 
+  /* ---- station location ---- */
+  .location { margin-top: 16px; overflow: hidden; display: grid; grid-template-columns: 1fr 260px; }
+  #map { min-height: 300px; background: var(--surface-2); }
+  /* Leaflet hardcodes its own font/colors; pull it back onto the page's tokens */
+  #map.leaflet-container { font: inherit; background: var(--surface-2); }
+  .leaflet-control-attribution {
+    background: color-mix(in srgb, var(--surface) 88%, transparent) !important;
+    color: var(--muted) !important; font-size: 10.5px !important;
+  }
+  .leaflet-control-attribution a { color: var(--ink-2) !important; }
+  .leaflet-control-zoom a {
+    background: var(--surface) !important; color: var(--ink-2) !important;
+    border-color: var(--border) !important;
+  }
+  .leaflet-control-zoom a:hover { background: var(--surface-2) !important; color: var(--ink) !important; }
+  /* station pin: pure CSS, so no marker image assets need vendoring */
+  .station-pin { position: relative; }
+  .station-pin i {
+    position: absolute; top: 50%; left: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
+    border-radius: 50%; background: var(--accent); border: 2.5px solid var(--surface);
+    box-shadow: 0 1px 4px rgba(0,0,0,.4);
+  }
+  .station-pin b {
+    position: absolute; top: 50%; left: 50%; width: 13px; height: 13px; margin: -6.5px 0 0 -6.5px;
+    border-radius: 50%; background: var(--accent); opacity: .45; animation: ping 2.8s ease-out infinite;
+  }
+  @keyframes ping { 0% { transform: scale(1); opacity: .45; } 70% { transform: scale(3.6); opacity: 0; } 100% { opacity: 0; } }
+
+  .loc-meta { padding: 16px 18px; border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 13px; }
+  .loc-meta .m-row .m-label { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  .loc-meta .m-row .m-val { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
+  .loc-meta .m-row .m-sub { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
+  .loc-meta .sun { display: flex; gap: 16px; }
+  .loc-meta .sun .s-item { display: flex; align-items: center; gap: 7px; }
+  .loc-meta .sun svg { width: 15px; height: 15px; color: var(--muted); flex: none; }
+  .loc-meta .sun .s-val { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
+  .loc-note { font-size: 11px; color: var(--muted); line-height: 1.45; margin-top: auto; padding-top: 4px; }
+
   @media (max-width: 720px) {
     .kpis { grid-template-columns: 1fr 1fr; }
     select { min-width: 0; }
     .controls { gap: 12px; }
+    .location { grid-template-columns: 1fr; }
+    .loc-meta { border-left: 0; border-top: 1px solid var(--border); }
   }
 </style>
 </head>
@@ -249,10 +290,41 @@
     <div id="chart" class="loading"></div>
   </div>
 
+  <div class="card location">
+    <div id="map"></div>
+    <div class="loc-meta">
+      <div class="m-row">
+        <div class="m-label">Station</div>
+        <div class="m-val" id="locName">&nbsp;</div>
+        <div class="m-sub" id="locCoords">&nbsp;</div>
+      </div>
+      <div class="m-row">
+        <div class="m-label">Timezone</div>
+        <div class="m-val" id="locTz">&nbsp;</div>
+      </div>
+      <div class="m-row">
+        <div class="m-label" id="sunLabel">Sun</div>
+        <div class="sun" style="margin-top:5px">
+          <div class="s-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v5M5.6 10.6 4.2 9.2M18.4 10.6l1.4-1.4M2 18h20M6 18a6 6 0 0 1 12 0"/></svg>
+            <span class="s-val" id="sunrise">–</span>
+          </div>
+          <div class="s-item">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 8V3M5.6 10.6 4.2 9.2M18.4 10.6l1.4-1.4M2 18h20M6 18a6 6 0 0 1 12 0M9 5l3 3 3-3"/></svg>
+            <span class="s-val" id="sunset">–</span>
+          </div>
+        </div>
+      </div>
+      <div class="loc-note" id="locNote"></div>
+    </div>
+  </div>
+
 </div>
 
 <script src="static/uPlot.iife.min.js"></script>
 <script src="static/sql-wasm.js"></script>
+<script src="static/leaflet.js"></script>
+<script src="static/protomaps-leaflet.js"></script>
 <script>
 // ---- metric catalog (matches columns in weather.db) ----
 // accent: [light, dark] series color chosen by metric family (single series shown
@@ -301,6 +373,7 @@ function applyTheme(t) {
   try { localStorage.setItem("wx-theme", t); } catch (e) {}
   document.getElementById("themeToggle").innerHTML = t === "dark" ? SUN : MOON;
   if (chart) { loadSeries(); renderNow(); }
+  if (map) drawMapLayer();   // vector tiles restyle rather than filter
 }
 function initTheme() {
   let saved = null;
@@ -312,6 +385,95 @@ function initTheme() {
   btn.onclick = () => applyTheme(currentTheme() === "dark" ? "light" : "dark");
 }
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
+
+/* ---------- station location ---------- */
+// Coordinates are deliberately rounded to ~1 km: this page is public, and full
+// precision would pin a residence for no analytical gain. At the map's max zoom
+// the difference isn't visible, and sun times shift by well under a second.
+// Keep in sync with scripts/fetch_basemap.sh, which cuts the basemap tiles.
+const STATION = {
+  lat: 41.59,
+  lon: -93.83,
+  tz: "America/Chicago",   // drives sun times; must be the station's real zone
+  label: "Des Moines metro, Iowa",
+};
+
+/* ---------- solar geometry ---------- */
+// NOAA's sunrise equation. Pure arithmetic — no dependency, no network, and it
+// only needs a date and a coordinate, which is the whole reason the station's
+// position is worth knowing beyond drawing a dot on a map.
+//
+// Returns UTC *instants* (ms). Mapping those onto the chart's axis is a
+// separate, fussier problem — see nightSpans() below.
+function sunInstantsUTC(dateMs, lat, lon) {
+  const rad = Math.PI / 180;
+  const lw = -lon;                                  // formula wants west-positive
+  const d = dateMs / 86400000 + 2440587.5 - 2451545.0;   // days since J2000
+  const n = Math.round(d - 0.0009 - lw / 360);
+  const ds = 0.0009 + lw / 360 + n;                 // mean solar noon
+  const M = (357.5291 + 0.98560028 * ds) % 360;     // solar mean anomaly
+  const C = 1.9148 * Math.sin(M * rad) + 0.02 * Math.sin(2 * M * rad) + 0.0003 * Math.sin(3 * M * rad);
+  const lam = (M + C + 180 + 102.9372) % 360;       // ecliptic longitude
+  const transit = 2451545.0 + ds + 0.0053 * Math.sin(M * rad) - 0.0069 * Math.sin(2 * lam * rad);
+  const decl = Math.asin(Math.sin(lam * rad) * Math.sin(23.44 * rad));
+  // -0.833° accounts for atmospheric refraction plus the sun's apparent radius,
+  // so this is the visible disc touching the horizon, not geometric center.
+  const cosW = (Math.sin(-0.833 * rad) - Math.sin(lat * rad) * Math.sin(decl))
+             / (Math.cos(lat * rad) * Math.cos(decl));
+  if (cosW > 1 || cosW < -1) return null;           // polar night / midnight sun
+  const w = Math.acos(cosW) / rad;
+  const jd2ms = j => (j - 2440587.5) * 86400000;
+  return { rise: jd2ms(transit - w / 360), set: jd2ms(transit + w / 360) };
+}
+
+// Wall-clock hour/minute of an instant, in the station's timezone.
+const TZ_FMT = new Intl.DateTimeFormat("en-US", {
+  timeZone: STATION.tz, hour: "2-digit", minute: "2-digit", hour12: false,
+});
+function localHM(ms) {
+  const p = Object.fromEntries(TZ_FMT.formatToParts(ms).map(x => [x.type, x.value]));
+  // Intl renders midnight as "24" in some engines' h23/h24 handling
+  return { h: Number(p.hour) % 24, m: Number(p.minute) };
+}
+function fmtHM({ h, m }) {
+  const ampm = h < 12 ? "AM" : "PM";
+  return `${((h + 11) % 12) + 1}:${String(m).padStart(2, "0")} ${ampm}`;
+}
+
+// The chart's x-axis is *not* real UTC: readings are stored as local wall-clock
+// time relabeled as UTC (see scripts/weather_ts.py), and uPlot renders the axis
+// in Etc/UTC so displayed times match what the station recorded. Sun times must
+// land in that same frame, so we compute the true instant, read its wall clock
+// in the station's zone, then re-stamp that wall clock as UTC. Going straight
+// from the UTC instant would put the bands 5-6 hours off — and DST would make
+// the error shift twice a year.
+function sunWallClock(dayStartWall) {
+  // dayStartWall is midnight of a local day, expressed in the wall-clock frame.
+  const d = new Date(dayStartWall * 1000);
+  const approx = Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), 12) ;
+  const s = sunInstantsUTC(approx, STATION.lat, STATION.lon);
+  if (!s) return null;
+  const mk = ms => {
+    const { h, m } = localHM(ms);
+    return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate(), h, m) / 1000;
+  };
+  return { rise: mk(s.rise), set: mk(s.set) };
+}
+
+// Dark intervals overlapping [t0, t1], in the chart's wall-clock-as-UTC frame.
+function nightSpans(t0, t1) {
+  const spans = [];
+  const DAY = 86400;
+  let day = Math.floor(t0 / DAY) * DAY - DAY;   // start a day early: the night
+  for (; day <= t1 + DAY; day += DAY) {         // before t0 can reach into range
+    const s = sunWallClock(day);
+    if (!s) continue;
+    const next = sunWallClock(day + DAY);
+    // night runs from this day's sunset to the next day's sunrise
+    if (next) spans.push([s.set, next.rise]);
+  }
+  return spans.filter(([a, b]) => b > t0 && a < t1);
+}
 
 async function initDb() {
   const SQL = await window.initSqlJs({ locateFile: () => "static/sql-wasm.wasm" });
@@ -371,6 +533,39 @@ async function getSeries(metric, startSec, endSec, resolution) {
 }
 
 /* ---------- tooltip plugin ---------- */
+// Shades the hours between sunset and sunrise behind the series, which makes
+// the diurnal cycle legible at a glance — the daily temperature swing lines up
+// with the bands instead of being an unexplained wave.
+//
+// Only worth drawing on short ranges: past ~2 weeks the bands compress into a
+// grey smear that hides the data instead of explaining it, so we bail out and
+// let the chart render clean.
+const NIGHT_MAX_SPAN = 16 * 86400;
+function nightPlugin() {
+  return {
+    hooks: {
+      drawClear: u => {
+        // the visible window, which is what matters after a drag-zoom
+        const t0 = u.scales.x.min, t1 = u.scales.x.max;
+        if (t0 == null || t1 == null || t1 - t0 > NIGHT_MAX_SPAN) return;
+        const ctx = u.ctx;
+        const { left, top, width, height } = u.bbox;
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(left, top, width, height);
+        ctx.clip();
+        ctx.fillStyle = isDark() ? "rgba(255,255,255,0.045)" : "rgba(11,11,11,0.045)";
+        for (const [a, b] of nightSpans(t0, t1)) {
+          const xa = u.valToPos(Math.max(a, t0), "x", true);
+          const xb = u.valToPos(Math.min(b, t1), "x", true);
+          if (xb > xa) ctx.fillRect(xa, top, xb - xa, height);
+        }
+        ctx.restore();
+      },
+    },
+  };
+}
+
 function tooltipPlugin(unit, hasBand, accent, dateOnly) {
   let tip, over;
   function fmt(v) { return v == null ? "–" : (Math.round(v * 100) / 100).toLocaleString(); }
@@ -515,8 +710,10 @@ function drawChart(data, meta, hasBand) {
       points: { size: 8, width: 2, stroke: accent, fill: bars ? accent : cssVar("--surface") },
       x: true, y: false,
     },
+    // night shading goes first so it paints behind the series; it's skipped for
+    // daily-total bars, where a day is one bar and "night" has no meaning
     plugins: bars ? [barsPlugin(accent), tooltipPlugin(meta.unit, false, accent, true)]
-                  : [tooltipPlugin(meta.unit, hasBand, accent)],
+                  : [nightPlugin(), tooltipPlugin(meta.unit, hasBand, accent)],
   };
   chart = new uPlot(opts, arr, el);
 }
@@ -720,8 +917,145 @@ function clearPresetsOnManual() {
   loadSeries();
 }
 
+/* ---------- locator map ---------- */
+// Vector tiles are cut from the Protomaps planet build into a single local
+// .pmtiles file (see scripts/fetch_basemap.sh) and read with range requests, so
+// the published page still makes zero third-party requests — same posture as
+// sql.js, uPlot and weather.db. Vector also means light/dark is a genuine
+// restyle rather than a CSS filter over baked-in raster colors.
+let map = null, mapLayer = null;
+
+function initMap() {
+  const el = document.getElementById("map");
+  map = L.map(el, {
+    center: [STATION.lat, STATION.lon],
+    zoom: 11,
+    // clamped to what the local tileset actually contains: pan or zoom past
+    // this and the map would show blank tiles rather than "more map"
+    minZoom: 10,
+    maxZoom: 12,
+    maxBounds: L.latLngBounds([41.19, -94.43], [41.99, -93.23]),
+    maxBoundsViscosity: 1,
+    scrollWheelZoom: false,   // the page scrolls; don't hijack the wheel
+    attributionControl: true,
+  });
+  drawMapLayer();
+  L.marker([STATION.lat, STATION.lon], {
+    icon: L.divIcon({ className: "station-pin", html: "<b></b><i></i>", iconSize: [13, 13] }),
+    keyboard: false,
+    interactive: false,
+  }).addTo(map);
+  // ODbL requires visible attribution for this Produced Work of OSM data
+  map.attributionControl.setPrefix("").addAttribution(
+    '<a href="https://openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a>'
+  );
+}
+
+// Landuse kinds worth tinting green; everything else in that layer is left as
+// plain land so the map stays a locator rather than a full-detail street map.
+const GREEN_LANDUSE = new Set([
+  "park", "forest", "wood", "grass", "meadow", "golf_course", "nature_reserve",
+  "recreation_ground", "cemetery", "national_park", "protected_area", "garden",
+  "pitch", "dog_park", "scrub", "farmland",
+]);
+
+// protomaps-leaflet 5.x dropped its bundled themes: it speaks the v4 tile
+// schema (bare `kind` attributes) but expects the caller to supply paint rules.
+// That's fine — hand-rolling them is only a few lines and lets the basemap use
+// the dashboard's own design tokens, so the map reads as part of the page
+// instead of an embedded widget with its own palette.
+//
+// (Worth knowing if you ever upgrade: protomaps-leaflet 4.x has built-in themes
+// but only understands the older `pmap:`-prefixed v2 schema, so pairing it with
+// this v4 tileset silently renders a near-empty map. Version and tile schema
+// have to move together.)
+function mapPalette() {
+  const d = isDark();
+  return {
+    land:   cssVar("--surface-2"),
+    green:  d ? "#1b221a" : "#e3eadd",
+    water:  d ? "#16232f" : "#c6d8e8",
+    minor:  d ? "#2f2f2d" : "#ffffff",
+    major:  d ? "#3d3d39" : "#ffffff",
+    hiway:  d ? "#4f4b42" : "#f4d7a4",
+    bound:  d ? "#3a3a37" : "#d5d4cc",
+    label:  cssVar("--ink-2"),
+    halo:   d ? "#121212" : "#ffffff",
+  };
+}
+
+function drawMapLayer() {
+  if (mapLayer) map.removeLayer(mapLayer);
+  const p = mapPalette();
+  const P = protomapsL;
+  const road = kind => (z, f) => f.props.kind === kind;
+
+  mapLayer = P.leafletLayer({
+    url: "static/basemap/station.pmtiles",
+    attribution: "",
+    backgroundColor: p.land,
+    paintRules: [
+      { dataLayer: "earth",    symbolizer: new P.PolygonSymbolizer({ fill: p.land }) },
+      { dataLayer: "landuse",  symbolizer: new P.PolygonSymbolizer({ fill: p.green }),
+        filter: (z, f) => GREEN_LANDUSE.has(f.props.kind) },
+      { dataLayer: "water",    symbolizer: new P.PolygonSymbolizer({ fill: p.water }) },
+      { dataLayer: "boundaries", symbolizer: new P.LineSymbolizer({ color: p.bound, width: 1, dash: [3, 2] }) },
+      // drawn thin→thick so bigger roads sit on top at every zoom
+      { dataLayer: "roads", symbolizer: new P.LineSymbolizer({ color: p.minor, width: P.exp(1.6, [[10, 0.4], [12, 1.4]]) }),
+        filter: road("minor_road") },
+      { dataLayer: "roads", symbolizer: new P.LineSymbolizer({ color: p.major, width: P.exp(1.6, [[10, 0.8], [12, 2.4]]) }),
+        filter: road("major_road") },
+      { dataLayer: "roads", symbolizer: new P.LineSymbolizer({ color: p.hiway, width: P.exp(1.6, [[10, 1.4], [12, 3.6]]) }),
+        filter: road("highway") },
+    ],
+    labelRules: [
+      { dataLayer: "places",
+        symbolizer: new P.CenteredTextSymbolizer({
+          labelProps: ["name"], fill: p.label, stroke: p.halo, width: 2.5,
+          font: "600 11px system-ui, sans-serif",
+        }),
+        filter: (z, f) => f.props.kind === "locality" },
+    ],
+  });
+  mapLayer.addTo(map);
+}
+
+function renderLocation() {
+  document.getElementById("locName").textContent = STATION.label;
+  // shown at the same precision we actually store, so the page doesn't imply
+  // a fix it doesn't have
+  document.getElementById("locCoords").textContent =
+    `${Math.abs(STATION.lat).toFixed(2)}° ${STATION.lat >= 0 ? "N" : "S"}, ` +
+    `${Math.abs(STATION.lon).toFixed(2)}° ${STATION.lon >= 0 ? "E" : "W"} · ±1 km`;
+  document.getElementById("locTz").textContent = STATION.tz.replace("_", " ");
+
+  // today per the station's clock, which is also the frame the chart uses
+  const nowWall = (() => {
+    const p = Object.fromEntries(new Intl.DateTimeFormat("en-CA", {
+      timeZone: STATION.tz, year: "numeric", month: "2-digit", day: "2-digit",
+    }).formatToParts(Date.now()).map(x => [x.type, x.value]));
+    return Date.UTC(+p.year, +p.month - 1, +p.day) / 1000;
+  })();
+  const s = sunWallClock(nowWall);
+  document.getElementById("sunLabel").textContent = "Sunrise / Sunset today";
+  document.getElementById("sunrise").textContent = s ? fmtHM(localHM_fromWall(s.rise)) : "–";
+  document.getElementById("sunset").textContent  = s ? fmtHM(localHM_fromWall(s.set))  : "–";
+  document.getElementById("locNote").textContent =
+    "Shaded bands on the chart mark the hours between sunset and sunrise, computed from these coordinates.";
+}
+
+// sunWallClock returns seconds already in wall-clock-as-UTC, so read the clock
+// straight off it rather than re-converting through a timezone
+function localHM_fromWall(sec) {
+  const d = new Date(sec * 1000);
+  return { h: d.getUTCHours(), m: d.getUTCMinutes() };
+}
+
 async function main() {
   initTheme();
+  // independent of the database, so a failed db load still leaves a working map
+  initMap();
+  renderLocation();
   try {
     state.db = await initDb();
     const [{ lo, hi }] = await q("SELECT MIN(ts) AS lo, MAX(ts) AS hi FROM readings");

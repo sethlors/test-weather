@@ -6,3 +6,4 @@ full_weather.db
 weather.db
 .DS_Store
 .idea/
+.claude/

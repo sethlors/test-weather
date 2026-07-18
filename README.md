@@ -33,11 +33,13 @@ git history of Detail-All.htm ┘
 |------|-----------|
 | `index.html` | The dashboard (loads sql.js + uPlot, queries `weather.db`) |
 | `weather.db` | Lean SQLite db (`ts` + 12 metrics, ~56k rows) — **not tracked on `main`**; it's maintained on the `weather-data` branch and baked into the Pages artifact at deploy |
-| `static/` | Vendored `sql.js` (wasm) and `uPlot` — all self-hosted |
+| `static/` | Vendored `sql.js` (wasm), `uPlot`, `Leaflet` + `protomaps-leaflet` — all self-hosted |
+| `static/basemap/station.pmtiles` | Vector basemap for the locator map (~3.5 MB), cut from the Protomaps planet build |
 | `scripts/build_weather_db.py` | Full extractor from `Detail-All.htm` git history (one-time build) |
 | `scripts/make_lean_db.py` | Full db → lean web db |
 | `scripts/sync_from_remote.py` | Pulls new readings from the live repo and appends them |
 | `scripts/weather_ts.py` | The one canonical wall-clock→epoch rule, shared by the builders and the sync |
+| `scripts/fetch_basemap.sh` | Regenerates the basemap tileset (only needed if the station moves) |
 | `.github/workflows/sync.yml` | Scheduled Action that syncs new readings and deploys the site |
 
 ## Metrics included
@@ -62,19 +64,70 @@ produce off-by-a-few-seconds duplicate rows. Both feed the same
 `epoch_from_*` helpers, which discard the timezone offset and keep only the
 wall-clock fields.
 
+## Station location & day/night shading
+
+The dashboard shows where the station is, and uses that position for something
+beyond decoration: **sunrise and sunset are computed from the coordinates**
+(NOAA's sunrise equation, ~30 lines of arithmetic, no dependency), and the hours
+between sunset and sunrise are shaded behind the chart. The daily temperature
+swing then reads as an obvious consequence of the sun rather than an
+unexplained wave.
+
+Shading is suppressed on ranges longer than 16 days, where the bands would
+compress into a grey smear, and on the daily-total rain bars, where "night"
+has no meaning.
+
+**Coordinates are deliberately rounded to ~1 km** (2 decimal places) in both
+`index.html` and `scripts/fetch_basemap.sh`. This is a public site and the
+station is at a residence; full precision would publish an address while buying
+nothing — at the map's maximum zoom a finer fix isn't distinguishable, and sun
+times shift by well under a second.
+
+### Why the basemap is a local file
+
+A normal map fetches tiles from a third-party server on every page load, which
+would undo the property this project otherwise maintains: the published page
+makes **no third-party requests**. So instead a small region is cut out of the
+[Protomaps](https://protomaps.com) planet build once (`scripts/fetch_basemap.sh`)
+and committed as a single `.pmtiles` archive, read via HTTP range requests —
+the same "one file on static storage" shape as `weather.db`.
+
+This is also why the tiles aren't scraped from OpenStreetMap's standard tile
+server: [its usage policy](https://operations.osmfoundation.org/policies/tiles/)
+prohibits pre-seeding areas and zoom levels. The Protomaps basemap is a Produced
+Work of OSM data under **ODbL**, which permits this redistribution provided the
+map visibly attributes *© OpenStreetMap* — it does, in the corner of the map.
+
+Range requests mean the archive's size costs visitors almost nothing: the
+browser fetches only the handful of tiles on screen (~200 KB), not the whole
+3.5 MB.
+
+> **Version pinning matters here.** `protomaps-leaflet` **5.x** speaks the v4
+> tile schema (bare `kind` attributes) but ships no built-in themes, so the paint
+> rules in `index.html` are hand-written against the page's design tokens.
+> **4.x** has themes but only understands the older `pmap:`-prefixed v2 schema —
+> pairing it with this v4 tileset renders a near-empty map with no error. The
+> library version and the tileset schema have to move together.
+
 ## Running locally
 
 The db isn't tracked on `main`, so grab the current one from the `weather-data`
-branch first. Then, because the whole db is loaded up front (no HTTP range
-requests needed), a plain static server works:
+branch first:
 
 ```bash
 git fetch origin weather-data
 git show origin/weather-data:weather.db > weather.db   # gitignored; local dev only
 
-python3 -m http.server 8000
-# open http://localhost:8000
+npx http-server . -p 8123 -c-1
+# open http://localhost:8123
 ```
+
+> Use a server that supports **HTTP range requests**. `weather.db` is loaded up
+> front and doesn't need them, but the `.pmtiles` basemap is read a few byte
+> ranges at a time — and Python's `http.server` answers `Range:` with the whole
+> file, so the map silently renders blank under `python3 -m http.server`.
+> GitHub Pages does serve ranges (`206 Partial Content`), so this only bites in
+> local dev.
 
 ## Deploying to GitHub Pages
 
