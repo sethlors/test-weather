@@ -315,7 +315,10 @@ function cssVar(name) { return getComputedStyle(document.documentElement).getPro
 
 async function initDb() {
   const SQL = await window.initSqlJs({ locateFile: () => "static/sql-wasm.wasm" });
-  const buf = await fetch("weather.db").then(r => {
+  // bust both the browser cache and the Pages CDN cache (max-age=600) so a
+  // fresh sync is visible promptly; the URL changes every 5 minutes
+  const bucket = Math.floor(Date.now() / 300000);
+  const buf = await fetch("weather.db?v=" + bucket, { cache: "no-cache" }).then(r => {
     if (!r.ok) throw new Error("could not fetch weather.db: HTTP " + r.status);
     return r.arrayBuffer();
   });

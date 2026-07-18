@@ -17,7 +17,10 @@ name: Sync weather db
 
 on:
   schedule:
-    - cron: "*/15 * * * *"   # ~every 15 min; backfill => still captures all 5-min data
+    # every 15 min, offset from :00/:15/:30/:45 — GitHub delays or skips
+    # scheduled runs at the high-contention minute marks; backfill means any
+    # missed run still captures all 5-min data on the next one
+    - cron: "4,19,34,49 * * * *"
   workflow_dispatch: {}       # manual "Run workflow" button
 
 permissions:
