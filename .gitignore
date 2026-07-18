@@ -1,0 +1,5 @@
+__pycache__/
+*.pyc
+full_weather.db
+.DS_Store
+.idea/

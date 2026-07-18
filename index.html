@@ -1,0 +1,251 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Weather History</title>
+<link rel="stylesheet" href="static/uPlot.min.css">
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Arial, sans-serif;
+    margin: 0; padding: 24px; background: #f5f6f8; color: #1a1a1a;
+  }
+  @media (prefers-color-scheme: dark) {
+    body { background: #16181d; color: #e8e8e8; }
+    .card { background: #21242b; border-color: #333; }
+    select, input, button { background: #2a2d35; color: #e8e8e8; border-color: #444; }
+    .stat .value { color: #fff; }
+    button.preset.active { background: #3a6df0; color: #fff; }
+  }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .subtitle { color: #888; font-size: 13px; margin-bottom: 20px; }
+  .card { background: #fff; border: 1px solid #e2e4e8; border-radius: 10px; padding: 16px 20px; margin-bottom: 16px; }
+  .controls { display: flex; flex-wrap: wrap; gap: 10px; align-items: center; }
+  select, input[type=date] { padding: 6px 10px; border-radius: 6px; border: 1px solid #ccc; font-size: 14px; }
+  .presets { display: flex; gap: 6px; flex-wrap: wrap; }
+  button.preset { padding: 6px 12px; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; font-size: 13px; }
+  button.preset.active { background: #3a6df0; color: #fff; border-color: #3a6df0; }
+  .stats { display: flex; gap: 24px; margin-top: 12px; flex-wrap: wrap; }
+  .stat .label { font-size: 12px; color: #888; }
+  .stat .value { font-size: 20px; font-weight: 600; }
+  #chart { width: 100%; min-height: 380px; }
+  .hint { font-size: 12px; color: #888; margin-top: 8px; }
+  .loading { opacity: .4; }
+  #status { font-size: 13px; color: #888; }
+</style>
+</head>
+<body>
+
+<h1>Weather History</h1>
+<div class="subtitle" id="subtitle">Loading database&hellip;</div>
+
+<div class="card">
+  <div class="controls">
+    <label>Metric <select id="metric"></select></label>
+    <div class="presets" id="presets"></div>
+    <label>From <input type="date" id="start"></label>
+    <label>To <input type="date" id="end"></label>
+  </div>
+  <div class="stats" id="stats"></div>
+</div>
+
+<div class="card">
+  <div id="chart" class="loading"></div>
+  <div class="hint" id="resHint"><span id="status">Connecting to weather.db&hellip;</span></div>
+</div>
+
+<script src="static/uPlot.iife.min.js"></script>
+<script src="static/sql-wasm.js"></script>
+<script>
+// ---- metric catalog (matches columns in weather.db) ----
+const METRICS = {
+  outsideTemp:      { label: "Outside Temperature", unit: "°F" },
+  outsideDewPt:     { label: "Dew Point",           unit: "°F" },
+  windChill:        { label: "Wind Chill",          unit: "°F" },
+  outsideHeatIndex: { label: "Heat Index",          unit: "°F" },
+  outsideHumidity:  { label: "Outside Humidity",    unit: "%" },
+  barometer:        { label: "Barometer",           unit: "inHg" },
+  windSpeed:        { label: "Wind Speed",          unit: "mph" },
+  rainRate:         { label: "Rain Rate",           unit: "in/hr" },
+  dailyRain:        { label: "Day Rain Total",      unit: "in" },
+  stormRain:        { label: "Storm Rain Total",    unit: "in" },
+  monthlyRain:      { label: "Month Rain Total",    unit: "in" },
+  totalRain:        { label: "Year Rain Total",     unit: "in" },
+};
+
+const state = { db: null, dbStart: null, dbEnd: null };
+let chart = null;
+
+async function initDb() {
+  const SQL = await window.initSqlJs({ locateFile: () => "static/sql-wasm.wasm" });
+  const buf = await fetch("weather.db").then(r => {
+    if (!r.ok) throw new Error("could not fetch weather.db: HTTP " + r.status);
+    return r.arrayBuffer();
+  });
+  return new SQL.Database(new Uint8Array(buf));
+}
+
+// Run a query and return an array of plain row objects.
+function q(sql) {
+  const res = state.db.exec(sql);
+  if (!res.length) return [];
+  const { columns, values } = res[0];
+  return values.map(row => Object.fromEntries(columns.map((c, i) => [c, row[i]])));
+}
+
+// Timestamps in the db are wall-clock instants stored as UTC, so all
+// date<->epoch conversion and axis rendering is done in UTC to stay aligned.
+function fmtDate(d) { return d.toISOString().slice(0, 10); }
+function fromDateInput(v, endOfDay) {
+  const d = new Date(v + (endOfDay ? "T23:59:59Z" : "T00:00:00Z"));
+  return Math.floor(d.getTime() / 1000);
+}
+
+function pickResolution(startSec, endSec) {
+  const days = (endSec - startSec) / 86400;
+  if (days <= 2) return "raw";
+  if (days <= 60) return "hourly";
+  return "daily";
+}
+
+async function getSeries(metric, startSec, endSec, resolution) {
+  const col = '"' + metric + '"';
+  const where = `ts BETWEEN ${startSec} AND ${endSec} AND ${col} IS NOT NULL`;
+  if (resolution === "raw") {
+    const rows = await q(`SELECT ts AS t, ${col} AS v FROM readings WHERE ${where} ORDER BY ts`);
+    return { t: rows.map(r => r.t), avg: rows.map(r => r.v), min: null, max: null };
+  }
+  const span = resolution === "hourly" ? 3600 : 86400;
+  const rows = await q(
+    `SELECT (ts/${span})*${span} AS b, AVG(${col}) AS a, MIN(${col}) AS mn, MAX(${col}) AS mx ` +
+    `FROM readings WHERE ${where} GROUP BY b ORDER BY b`
+  );
+  return { t: rows.map(r => r.b), avg: rows.map(r => r.a), min: rows.map(r => r.mn), max: rows.map(r => r.mx) };
+}
+
+function isDark() { return window.matchMedia && matchMedia("(prefers-color-scheme: dark)").matches; }
+
+function drawChart(data, label, unit, hasBand) {
+  const el = document.getElementById("chart");
+  el.classList.remove("loading");
+  el.innerHTML = "";
+  const series = [{}, { label: `${label} (${unit})`, stroke: "#3a6df0", width: 1.5, points: { show: data.t.length < 400 } }];
+  const arr = [data.t, data.avg];
+  if (hasBand && data.min && data.max) {
+    series.push({ label: "min", stroke: "rgba(58,109,240,0)", width: 0 });
+    series.push({ label: "max", stroke: "rgba(58,109,240,0)", width: 0, fill: "rgba(58,109,240,0.14)", band: { series: [2, 3] } });
+    arr.push(data.min, data.max);
+  }
+  const fg = isDark() ? "#e8e8e8" : "#1a1a1a";
+  const grid = isDark() ? "#333" : "#eee";
+  const opts = {
+    width: el.clientWidth || 800,
+    height: 380,
+    // db timestamps are wall-clock-as-UTC; render the x-axis in UTC so the
+    // displayed times match what the weather station recorded, for any viewer.
+    tzDate: ts => uPlot.tzDate(new Date(ts * 1e3), "Etc/UTC"),
+    series,
+    axes: [
+      { stroke: fg, grid: { stroke: grid } },
+      { stroke: fg, grid: { stroke: grid } },
+    ],
+    scales: { x: { time: true } },
+    cursor: { drag: { x: true, y: false } },
+  };
+  chart = new uPlot(opts, arr, el);
+}
+
+function fmtVal(v, unit) {
+  if (v == null || Number.isNaN(v)) return "–";
+  return v.toFixed(2) + " " + unit;
+}
+
+function renderStats(data, unit) {
+  const vals = data.avg.filter(v => v != null);
+  const el = document.getElementById("stats");
+  if (!vals.length) { el.innerHTML = "<em>No data in this range</em>"; return; }
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const avg = vals.reduce((a, b) => a + b, 0) / vals.length;
+  const last = vals[vals.length - 1];
+  el.innerHTML = `
+    <div class="stat"><div class="label">Latest</div><div class="value">${fmtVal(last, unit)}</div></div>
+    <div class="stat"><div class="label">Min</div><div class="value">${fmtVal(min, unit)}</div></div>
+    <div class="stat"><div class="label">Avg</div><div class="value">${fmtVal(avg, unit)}</div></div>
+    <div class="stat"><div class="label">Max</div><div class="value">${fmtVal(max, unit)}</div></div>`;
+}
+
+async function loadSeries() {
+  const metric = document.getElementById("metric").value;
+  const startV = document.getElementById("start").value;
+  const endV = document.getElementById("end").value;
+  if (!metric || !startV || !endV) return;
+  const startSec = fromDateInput(startV, false);
+  const endSec = fromDateInput(endV, true);
+  const res = pickResolution(startSec, endSec);
+  document.getElementById("resHint").textContent =
+    res === "raw" ? "Showing full 5-minute resolution" :
+    res === "hourly" ? "Showing hourly averages (shaded band = min/max that hour)" :
+    "Showing daily averages (shaded band = min/max that day)";
+  document.getElementById("chart").classList.add("loading");
+  const data = await getSeries(metric, startSec, endSec, res);
+  const meta = METRICS[metric];
+  drawChart(data, meta.label, meta.unit, res !== "raw");
+  renderStats(data, meta.unit);
+}
+
+function setPresetActive(days) {
+  document.querySelectorAll("button.preset").forEach(b => b.classList.toggle("active", b.dataset.days === String(days)));
+}
+function applyPreset(days) {
+  const end = new Date(state.dbEnd * 1000);
+  let start = days === "all" ? new Date(state.dbStart * 1000)
+                             : new Date(end.getTime() - days * 86400000);
+  if (start.getTime() / 1000 < state.dbStart) start = new Date(state.dbStart * 1000);
+  document.getElementById("start").value = fmtDate(start);
+  document.getElementById("end").value = fmtDate(end);
+  setPresetActive(days);
+  loadSeries();
+}
+function buildPresets() {
+  const el = document.getElementById("presets");
+  [["1d", 1], ["7d", 7], ["30d", 30], ["90d", 90], ["1y", 365], ["All", "all"]].forEach(([label, days]) => {
+    const b = document.createElement("button");
+    b.className = "preset"; b.textContent = label; b.dataset.days = String(days);
+    b.onclick = () => applyPreset(days);
+    el.appendChild(b);
+  });
+}
+
+async function main() {
+  try {
+    state.db = await initDb();
+    const [{ lo, hi }] = await q("SELECT MIN(ts) AS lo, MAX(ts) AS hi FROM readings");
+    state.dbStart = lo; state.dbEnd = hi;
+    const s = new Date(lo * 1000), e = new Date(hi * 1000);
+    document.getElementById("subtitle").textContent =
+      `Data from ${fmtDate(s)} to ${fmtDate(e)} · queried directly from weather.db in your browser`;
+
+    const sel = document.getElementById("metric");
+    Object.entries(METRICS).forEach(([k, m]) => {
+      const o = document.createElement("option");
+      o.value = k; o.textContent = `${m.label} (${m.unit})`;
+      sel.appendChild(o);
+    });
+    sel.onchange = loadSeries;
+    document.getElementById("start").onchange = loadSeries;
+    document.getElementById("end").onchange = loadSeries;
+    buildPresets();
+    applyPreset(7);
+    window.addEventListener("resize", () => { if (chart) chart.setSize({ width: document.getElementById("chart").clientWidth, height: 380 }); });
+  } catch (err) {
+    document.getElementById("subtitle").textContent = "Failed to load database.";
+    document.getElementById("status").textContent = String(err);
+    console.error(err);
+  }
+}
+main();
+</script>
+</body>
+</html>

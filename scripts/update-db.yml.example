@@ -1,0 +1,62 @@
+# Example GitHub Actions workflow for AUTO-UPDATING the dashboard db.
+#
+# This belongs in the repo that actually receives the weather feed (the one
+# whose Detail-All.htm is committed every ~5 minutes by the Windows machine),
+# e.g. Davis_Weather. Copy it to .github/workflows/update-db.yml there.
+#
+# It runs after each weather push, incrementally appends the new reading(s)
+# to the lean weather.db, and commits the updated db back. The "[skip ci]"
+# tag on that commit stops it from re-triggering itself.
+#
+# GitHub Pages then serves the refreshed weather.db automatically.
+
+name: Update weather dashboard db
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "Detail-All.htm"   # only run when a new reading lands
+
+permissions:
+  contents: write
+
+concurrency:
+  group: update-db
+  cancel-in-progress: false
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    # don't run on the bot's own db-update commit
+    if: "!contains(github.event.head_commit.message, '[skip ci]')"
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # full history needed to read past commits
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Incrementally update lean db
+        run: |
+          # if the lean db doesn't exist yet, build it from scratch first
+          if [ ! -f weather.db ]; then
+            python3 scripts/build_weather_db.py --repo . --out full_weather.db
+            python3 scripts/make_lean_db.py --src full_weather.db --out weather.db
+          else
+            python3 scripts/update_weather_db.py --repo . --db weather.db
+          fi
+
+      - name: Commit updated db
+        run: |
+          git config user.name  "weather-bot"
+          git config user.email "actions@github.com"
+          if ! git diff --quiet -- weather.db; then
+            git add weather.db
+            git commit -m "Update dashboard db [skip ci]"
+            git push
+          else
+            echo "no db changes"
+          fi
