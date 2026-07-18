@@ -166,7 +166,7 @@
   .now { padding: 14px 18px; margin-bottom: 16px; display: flex; flex-wrap: wrap; gap: 6px 26px; align-items: center; }
   .now .n-head { display: flex; flex-direction: column; gap: 2px; min-width: 130px; }
   .now .n-title { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); display: flex; align-items: center; gap: 6px; }
-  .now .n-title .pulse { width: 7px; height: 7px; border-radius: 50%; background: var(--good); box-shadow: 0 0 0 0 rgba(12,163,12,.5); animation: pulse 2.4s infinite; }
+  .now .n-title .pulse, .dash-foot .pulse { width: 7px; height: 7px; border-radius: 50%; flex: none; background: var(--good); box-shadow: 0 0 0 0 rgba(12,163,12,.5); animation: pulse 2.4s infinite; }
   @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(12,163,12,.45); } 70% { box-shadow: 0 0 0 7px rgba(12,163,12,0); } 100% { box-shadow: 0 0 0 0 rgba(12,163,12,0); } }
   .now .n-time { font-size: 12px; color: var(--muted); }
   .now .n-item { display: flex; align-items: center; gap: 8px; cursor: pointer; padding: 6px 10px; margin: -6px -10px; border-radius: 9px; transition: background .12s; }
@@ -224,6 +224,75 @@
   .loc-meta .sun .s-val { font-size: 13px; font-weight: 600; font-variant-numeric: tabular-nums; }
   .loc-note { font-size: 11px; color: var(--muted); line-height: 1.45; margin-top: auto; padding-top: 4px; }
 
+  /* ---- dashboard view ---- */
+  /* A glanceable, tablet-sized overview of the current reading only. Sizes are
+     clamp()ed against the viewport so the same markup reads correctly from a
+     7" tablet propped on a desk up to a wall-mounted 13" one across a room. */
+  body[data-view="dashboard"] { padding: 18px 18px 26px; }
+  body[data-view="dashboard"] .wrap { max-width: 1500px; }
+
+  .dash-top { display: grid; grid-template-columns: minmax(210px, 1fr) 2.5fr; gap: 14px; margin-bottom: 14px; }
+
+  .d-wind { padding: 15px 16px 18px; display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .d-cap { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); align-self: flex-start; }
+  .d-compass { width: 100%; max-width: 215px; margin-top: 2px; }
+  .d-compass svg { width: 100%; height: auto; display: block; }
+  .d-wind-read { text-align: center; margin-top: 2px; }
+  .d-wind-spd { font-size: clamp(30px, 4.4vw, 44px); font-weight: 670; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
+  .d-wind-read .d-u { font-size: clamp(13px, 1.5vw, 16px); font-weight: 550; color: var(--ink-2); margin-left: 4px; }
+  .d-wind-dir { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; }
+
+  .d-hero {
+    padding: 16px 22px 22px; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; text-align: center; gap: 4px;
+    background: radial-gradient(120% 140% at 100% 0%, var(--accent-soft), transparent 62%), var(--surface);
+  }
+  .d-baro { font-size: clamp(15px, 2vw, 23px); font-weight: 600; color: var(--ink-2);
+            display: flex; align-items: center; justify-content: center; gap: 9px; flex-wrap: wrap; }
+  .d-baro .b-trend { display: inline-flex; align-items: center; gap: 5px; }
+  .d-baro .b-trend svg { width: 1em; height: 1em; }
+  .d-baro .b-sep { color: var(--axis); }
+  /* --ink rather than the metric accent: at this size the number is the one
+     thing that must read from across a room, and full contrast wins. */
+  .d-temp { font-size: clamp(84px, 14.5vw, 178px); font-weight: 680; color: var(--ink);
+            letter-spacing: -0.045em; line-height: .95; font-variant-numeric: tabular-nums; }
+  .d-dew { font-size: clamp(12.5px, 1.4vw, 15px); color: var(--muted); }
+
+  .dash-row { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; margin-bottom: 14px; }
+  .dash-row.four { grid-template-columns: repeat(4, 1fr); }
+  .d-tile { padding: 15px 18px 17px; cursor: pointer; transition: border-color .12s, transform .12s; }
+  .d-tile:hover { border-color: color-mix(in srgb, var(--tint, var(--accent)) 45%, var(--border)); }
+  .d-tile:active { transform: scale(.995); }
+  .d-tile .t-label { font-size: clamp(10.5px, 1.15vw, 12.5px); font-weight: 600; letter-spacing: .05em;
+                     text-transform: uppercase; color: var(--muted); }
+  .d-tile .t-value { font-size: clamp(30px, 4.8vw, 52px); font-weight: 660; letter-spacing: -0.03em;
+                     margin-top: 5px; line-height: 1.02; font-variant-numeric: tabular-nums; color: var(--tint, var(--ink)); }
+  .d-tile .t-value .u { font-size: .44em; font-weight: 550; color: var(--ink-2); margin-left: 3px; letter-spacing: 0; }
+
+  .dash-sec { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase;
+              color: var(--muted); margin: 2px 2px 9px; }
+  .dash-foot { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--muted); padding: 2px 2px; }
+
+  /* Tablet portrait: the wind card moves above the hero, and turns on its side
+     so the compass and the reading sit beside each other — stacked, a
+     full-width card leaves a screen's worth of dead space under the dial. */
+  @media (max-width: 900px) {
+    .dash-top { grid-template-columns: 1fr; }
+    .d-wind { position: relative; flex-direction: row; justify-content: center; gap: 30px; padding: 34px 16px 20px; }
+    .d-wind .d-cap { position: absolute; top: 15px; left: 16px; }
+    .d-compass { max-width: 148px; margin-top: 0; }
+    .dash-row.four { grid-template-columns: repeat(2, 1fr); }
+    .d-temp { font-size: clamp(76px, 20vw, 150px); }
+  }
+
+  /* Below this the three feel tiles stop fitting side by side; pairing them is
+     better than letting one orphan onto its own row. */
+  @media (max-width: 620px) {
+    .dash-row { grid-template-columns: repeat(2, 1fr); }
+    .d-wind { flex-direction: column; gap: 10px; padding: 15px 16px 18px; }
+    .d-wind .d-cap { position: static; align-self: flex-start; }
+  }
+
   @media (max-width: 720px) {
     .kpis { grid-template-columns: 1fr 1fr; }
     select { min-width: 0; }
@@ -250,8 +319,33 @@
       </div>
     </div>
     <div class="spacer"></div>
+    <button class="theme-toggle" id="viewToggle" title="Dashboard view" aria-label="Switch to dashboard view" aria-pressed="false"></button>
     <button class="theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle color theme"></button>
   </header>
+
+  <div id="dashView" hidden>
+    <div class="dash-top">
+      <div class="card d-wind">
+        <div class="d-cap">Wind</div>
+        <div class="d-compass" id="compass"></div>
+        <div class="d-wind-read">
+          <span class="d-wind-spd" id="dWindSpd">–</span><span class="d-u">mph</span>
+          <span class="d-wind-dir" id="dWindDir">&nbsp;</span>
+        </div>
+      </div>
+      <div class="card d-hero">
+        <div class="d-baro" id="dBaro">&nbsp;</div>
+        <div class="d-temp" id="dTemp">–°</div>
+        <div class="d-dew" id="dDew">&nbsp;</div>
+      </div>
+    </div>
+    <div class="dash-row" id="dashFeel"></div>
+    <div class="dash-sec">Rainfall</div>
+    <div class="dash-row four" id="dashRain"></div>
+    <div class="dash-foot" id="dashFoot"></div>
+  </div>
+
+  <div id="mainView">
 
   <div class="card now" id="nowPanel" hidden></div>
 
@@ -319,6 +413,8 @@
     </div>
   </div>
 
+  </div><!-- /#mainView -->
+
 </div>
 
 <script src="static/uPlot.iife.min.js"></script>
@@ -373,6 +469,8 @@ function applyTheme(t) {
   try { localStorage.setItem("wx-theme", t); } catch (e) {}
   document.getElementById("themeToggle").innerHTML = t === "dark" ? SUN : MOON;
   if (chart) { loadSeries(); renderNow(); }
+  // metric accents differ per theme, so the dashboard has to repaint too
+  if (state.db && currentView() === "dashboard") renderDashboard();
   if (map) drawMapLayer();   // vector tiles restyle rather than filter
 }
 function initTheme() {
@@ -784,10 +882,14 @@ function renderStats(data, unit, accent, res, dailyTotal) {
 }
 
 /* ---------- current conditions strip ---------- */
-function renderNow() {
+function latestReading() {
   const rows = q("SELECT * FROM readings ORDER BY ts DESC LIMIT 1");
-  if (!rows.length) return;
-  const r = rows[0];
+  return rows.length ? rows[0] : null;
+}
+
+function renderNow() {
+  const r = latestReading();
+  if (!r) return;
   const el = document.getElementById("nowPanel");
   const when = new Date(r.ts * 1000).toLocaleString("en-US", { timeZone: "UTC",
     month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
@@ -813,6 +915,196 @@ function renderNow() {
     item.onclick = go;
     item.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } };
   });
+}
+
+/* ---------- dashboard view ---------- */
+// A single-screen, glanceable read of the newest sample — the tablet-on-the-wall
+// counterpart to the history view. It deliberately queries only the latest row:
+// everything here is "right now", so there is no range, no bucketing, no chart.
+
+const DIR_DEG = {
+  N: 0, NNE: 22.5, NE: 45, ENE: 67.5, E: 90, ESE: 112.5, SE: 135, SSE: 157.5,
+  S: 180, SSW: 202.5, SW: 225, WSW: 247.5, W: 270, WNW: 292.5, NW: 315, NNW: 337.5,
+};
+
+const STEADY_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M5 12h14"/></svg>';
+const GRID_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="7" height="9" rx="1.5"/><rect x="14" y="3" width="7" height="5" rx="1.5"/><rect x="3" y="16" width="7" height="5" rx="1.5"/><rect x="14" y="12" width="7" height="9" rx="1.5"/></svg>';
+const CHART_ICON = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19V5M4 19h16M8 15l3.5-4.5 3 3L20 7"/></svg>';
+
+// Compass rose. The needle points at the direction the wind blows *from*, which
+// is the meteorological convention the station reports in — so a needle on SW
+// means a southwesterly, not wind heading southwest.
+function compassSvg(dir, color) {
+  const bearing = dir && dir in DIR_DEG ? DIR_DEG[dir] : null;
+  const pt = (r, deg) => {
+    const a = (deg - 90) * Math.PI / 180;
+    return [(100 + r * Math.cos(a)).toFixed(1), (100 + r * Math.sin(a)).toFixed(1)];
+  };
+  let marks = "";
+  for (let i = 0; i < 16; i++) {
+    const major = i % 4 === 0;
+    // both tick classes hang off the outer ring so they read as graduations on
+    // it rather than as dashes floating in the bezel
+    const [x1, y1] = pt(91, i * 22.5);
+    const [x2, y2] = pt(major ? 79 : 85, i * 22.5);
+    marks += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" `
+      + `stroke="${major ? "var(--ink-2)" : "var(--axis)"}" stroke-width="${major ? 2.5 : 1.5}" stroke-linecap="round"/>`;
+  }
+  ["N", "NE", "E", "SE", "S", "SW", "W", "NW"].forEach((L, i) => {
+    const [x, y] = pt(63, i * 45);
+    const cardinal = L.length === 1;
+    marks += `<text x="${x}" y="${y}" text-anchor="middle" dominant-baseline="central" `
+      + `font-family="system-ui, sans-serif" font-size="${cardinal ? 16 : 12.5}" font-weight="${cardinal ? 700 : 600}" `
+      + `fill="${L === "N" ? "var(--ink)" : "var(--muted)"}">${L}</text>`;
+  });
+  const needle = bearing == null ? ""
+    : `<g transform="rotate(${bearing} 100 100)"><path d="M100 31 L106.5 100 L100 117 L93.5 100 Z" fill="${color}"/></g>`;
+  const label = dir ? `Wind from the ${dir}` : "Wind direction unavailable";
+  return `<svg viewBox="0 0 200 200" role="img" aria-label="${label}">`
+    + `<circle cx="100" cy="100" r="95" fill="var(--surface-2)" stroke="var(--border)" stroke-width="1"/>`
+    + `<circle cx="100" cy="100" r="76" fill="none" stroke="var(--grid)" stroke-width="1"/>`
+    + marks + needle
+    + `<circle cx="100" cy="100" r="7" fill="${bearing == null ? "var(--axis)" : "var(--ink)"}"/></svg>`;
+}
+
+// The station reports trend as a phrase ("Falling Slowly"); we only need its
+// direction for the arrow and pass the phrase itself through verbatim.
+function baroTrendIcon(phrase) {
+  if (!phrase) return null;
+  const p = phrase.toLowerCase();
+  if (p.startsWith("rising")) return ARROW_UP;
+  if (p.startsWith("falling")) return ARROW_DN;
+  return STEADY_ICON;
+}
+
+// `dec` pins the decimal count where a fixed width reads better than a
+// significant-figures one — rain totals sitting at 0.00 rather than 0.
+function dashTile(key, label, r, dec) {
+  const m = METRICS[key];
+  const c = m.accent[isDark() ? 1 : 0];
+  const v = r[key];
+  const shown = (v == null || Number.isNaN(v)) ? "–" : (dec == null ? fmtNum(v) : v.toFixed(dec));
+  return `<div class="card d-tile" data-metric="${key}" style="--tint:${c}" role="button" tabindex="0" title="Show ${m.label} history">
+    <div class="t-label">${label}</div>
+    <div class="t-value">${shown}<span class="u">${shown === "–" ? "" : m.unit}</span></div>
+  </div>`;
+}
+
+function renderDashboard() {
+  const r = latestReading();
+  if (!r) return;
+  const dark = isDark() ? 1 : 0;
+
+  // wind: compass + speed
+  document.getElementById("compass").innerHTML =
+    compassSvg(r.windDirection, METRICS.windSpeed.accent[dark]);
+  document.getElementById("dWindSpd").textContent =
+    r.windSpeed == null ? "–" : r.windSpeed.toFixed(1);
+  document.getElementById("dWindDir").textContent = r.windDirection
+    ? `from the ${r.windDirection}`
+    : "direction not recorded";
+
+  // barometer strip + hero temperature
+  const icon = baroTrendIcon(r.barTrend);
+  // three decimals: pressure moves in thousandths of an inch, and rounding to
+  // fmtNum's two would flatten most of the change the trend phrase describes
+  const baro = r.barometer == null ? "–" : r.barometer.toFixed(3);
+  document.getElementById("dBaro").innerHTML =
+    `<span>Barometer <b style="color:var(--ink);font-weight:670">${baro}</b> inHg</span>`
+    + (icon ? `<span class="b-sep">·</span><span class="b-trend">${icon}${r.barTrend}</span>` : "");
+  document.getElementById("dTemp").textContent = `${fmtNum(r.outsideTemp)}°`;
+  document.getElementById("dDew").textContent =
+    r.outsideDewPt == null ? "" : `Dew point ${fmtNum(r.outsideDewPt)} °F`;
+
+  document.getElementById("dashFeel").innerHTML =
+    dashTile("windChill", "Wind Chill", r) +
+    dashTile("outsideHumidity", "Humidity", r, 0) +
+    dashTile("outsideHeatIndex", "Heat Index", r);
+
+  document.getElementById("dashRain").innerHTML =
+    dashTile("rainRate", "Rate", r, 2) +
+    dashTile("stormRain", "This Storm", r, 2) +
+    dashTile("monthlyRain", "This Month", r, 2) +
+    dashTile("totalRain", "This Year", r, 2);
+
+  const when = new Date(r.ts * 1000).toLocaleString("en-US", { timeZone: "UTC",
+    weekday: "short", month: "short", day: "numeric", hour: "numeric", minute: "2-digit" });
+  document.getElementById("dashFoot").innerHTML =
+    `<span class="pulse"></span><span>Updated ${when} · station time</span>`;
+
+  document.querySelectorAll("#dashView .d-tile").forEach(t => {
+    const go = () => {
+      document.getElementById("metric").value = t.dataset.metric;
+      setView("history");
+      loadSeries();
+    };
+    t.onclick = go;
+    t.onkeydown = e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); go(); } };
+  });
+}
+
+/* ---------- view switching ---------- */
+const VIEW_KEY = "wx-view";
+function currentView() { return document.body.getAttribute("data-view") || "history"; }
+
+function setView(v) {
+  const dash = v === "dashboard";
+  document.body.setAttribute("data-view", dash ? "dashboard" : "history");
+  document.getElementById("dashView").hidden = !dash;
+  document.getElementById("mainView").hidden = dash;
+
+  const btn = document.getElementById("viewToggle");
+  btn.innerHTML = dash ? CHART_ICON : GRID_ICON;
+  btn.title = dash ? "History view" : "Dashboard view";
+  btn.setAttribute("aria-label", dash ? "Switch to history view" : "Switch to dashboard view");
+  btn.setAttribute("aria-pressed", String(dash));
+  // a wall tablet gets power-cycled; remember which view it was left on
+  try { localStorage.setItem(VIEW_KEY, dash ? "dashboard" : "history"); } catch (e) {}
+
+  if (dash) {
+    if (state.db) renderDashboard();
+    startDashRefresh();
+  } else {
+    stopDashRefresh();
+    // both were laid out inside a hidden container (client width 0) and only
+    // learn their real size once it's back on screen
+    if (chart) chart.setSize({ width: document.getElementById("chart").clientWidth, height: 420 });
+    if (map) map.invalidateSize();
+  }
+}
+
+// The history view is loaded once and driven by hand; the dashboard is meant to
+// be left running for days, so it has to pull new readings itself. The sync
+// publishes about every 15 minutes, so anything faster just refetches the same
+// bytes.
+const DASH_REFRESH_MS = 15 * 60 * 1000;
+let dashTimer = null;
+function startDashRefresh() {
+  stopDashRefresh();
+  dashTimer = setInterval(refreshDashboardData, DASH_REFRESH_MS);
+}
+function stopDashRefresh() {
+  if (dashTimer) { clearInterval(dashTimer); dashTimer = null; }
+}
+async function refreshDashboardData() {
+  if (document.hidden) return;   // don't refetch behind a locked or backgrounded screen
+  try {
+    const db = await initDb();
+    if (state.db && state.db.close) state.db.close();   // free the previous copy
+    state.db = db;
+    const [{ lo, hi }] = q("SELECT MIN(ts) AS lo, MAX(ts) AS hi FROM readings");
+    state.dbStart = lo; state.dbEnd = hi;
+    renderDashboard();
+  } catch (err) {
+    console.error("dashboard refresh failed", err);
+  }
+}
+
+function initViewToggle() {
+  const btn = document.getElementById("viewToggle");
+  document.body.setAttribute("data-view", "history");
+  btn.innerHTML = GRID_ICON;
+  btn.onclick = () => setView(currentView() === "dashboard" ? "history" : "dashboard");
 }
 
 /* ---------- CSV export of the charted series ---------- */
@@ -1053,6 +1345,7 @@ function localHM_fromWall(sec) {
 
 async function main() {
   initTheme();
+  initViewToggle();
   // independent of the database, so a failed db load still leaves a working map
   initMap();
   renderLocation();
@@ -1078,8 +1371,15 @@ async function main() {
     buildPresets();
     renderNow();
     if (!applyHashState()) applyPreset(7);
+    // restore last view *after* the chart exists, so switching back to history
+    // finds something already drawn rather than an empty card
+    let savedView = null;
+    try { savedView = localStorage.getItem(VIEW_KEY); } catch (e) {}
+    if (savedView === "dashboard") setView("dashboard");
     window.addEventListener("resize", () => {
-      if (chart) chart.setSize({ width: document.getElementById("chart").clientWidth, height: 420 });
+      if (chart && currentView() === "history") {
+        chart.setSize({ width: document.getElementById("chart").clientWidth, height: 420 });
+      }
     });
   } catch (err) {
     document.getElementById("subtitle").textContent = "Failed to load database.";

@@ -47,8 +47,37 @@ git history of Detail-All.htm ┘
 Outside temperature, dew point, wind chill, heat index, outside humidity,
 barometer, wind speed, rain rate, and day/storm/month/year rain totals.
 
+Plus two **text** fields, which aren't charted and exist for the dashboard view:
+`windDirection` (16-point compass string, e.g. `SSW`) and `barTrend` (the
+station's own phrase, e.g. `Falling Slowly`). Neither is derivable from the
+numeric series, so the station's reported value is the only source. The station
+writes `---` when it has no reading; both builders normalize that to `NULL`.
+
 (Inside temp/humidity aren't available — the source page only embeds those as
 images, with no text value to extract.)
+
+### Adding a column
+
+The published db is restored from the `weather-data` branch and appended to in
+place — it is never rebuilt from the full db — so a new column reaches
+production only through `ensure_schema()` in `sync_from_remote.py`, which
+`ALTER`s it in on the next run. Add it in **both** `make_lean_db.py` and
+`sync_from_remote.py` or a rebuilt db and a synced db will diverge. Rows written
+before the column existed keep `NULL`; backfilling would mean refetching every
+historical commit from the API.
+
+## Two views
+
+The header toggles between them, and the choice is remembered in
+`localStorage`:
+
+- **History** — the metric picker, range presets, chart, stats and locator map.
+- **Dashboard** — a glanceable, tablet-sized read of the newest sample only:
+  wind compass, hero temperature, barometer + trend, wind chill / humidity /
+  heat index, and the four rainfall totals. Because it's meant to be left
+  running on a wall-mounted tablet, it refetches the db every 15 minutes (the
+  sync cadence) while it's the active view and the page isn't backgrounded.
+  Every tile is a link into that metric's history.
 
 ## Timestamps
 

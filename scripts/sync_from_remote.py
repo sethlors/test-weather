@@ -55,6 +55,45 @@ METRICS = [
     "dailyRain", "stormRain", "monthlyRain", "totalRain",
 ]
 
+# Kept in step with make_lean_db.py's TEXT_FIELDS/NO_VALUE — the two builders
+# have to agree on the lean schema or a rebuilt db and a synced db diverge.
+TEXT_FIELDS = [
+    ("windDirection", "windDirection"),
+    ("BarTrend", "barTrend"),
+]
+NO_VALUE = "---"
+
+
+def clean_text(v):
+    """Normalize a station text field to a value or None."""
+    if not isinstance(v, str):
+        return None
+    v = v.strip()
+    if not v or v == NO_VALUE:
+        return None
+    return v
+
+
+def ensure_schema(conn):
+    """Add lean columns the db predates.
+
+    The published db is restored from the `weather-data` branch and appended to
+    in place — it is never rebuilt from the full db — so a column added to the
+    lean schema only ever reaches production through this migration. Without it
+    the INSERT below would not match the live table's shape.
+
+    Rows written before a column existed keep NULL for it. Backfilling would
+    mean refetching every historical commit from the API, and the dashboard
+    fields these feed only ever read the newest reading, so it isn't worth it.
+    """
+    have = {r[1] for r in conn.execute("PRAGMA table_info(readings)")}
+    for _, col in TEXT_FIELDS:
+        if col not in have:
+            conn.execute(f'ALTER TABLE readings ADD COLUMN "{col}" TEXT')
+            print(f"migrated schema: added column {col}")
+    conn.commit()
+
+
 def http_get(url, token=None, raw=False):
     req = urllib.request.Request(url)
     req.add_header("User-Agent", "davis-weather-sync")
@@ -104,6 +143,7 @@ def main():
     token = os.environ.get("GITHUB_TOKEN") or None
 
     conn = sqlite3.connect(args.db)
+    ensure_schema(conn)
     row = conn.execute("SELECT MAX(ts) FROM readings").fetchone()
     max_ts = row[0] if row and row[0] is not None else 0
     if max_ts:
@@ -122,8 +162,13 @@ def main():
         conn.close()
         return
 
-    ph = ",".join("?" * (len(METRICS) + 1))
-    insert = f"INSERT OR IGNORE INTO readings VALUES ({ph})"
+    # Named columns rather than positional: ALTER-migrated columns land at the
+    # end of the table, so a bare VALUES(...) would be order-sensitive in a way
+    # that breaks quietly the next time the schema grows.
+    insert_cols = ["ts"] + METRICS + [c for _, c in TEXT_FIELDS]
+    col_list = ", ".join(f'"{c}"' for c in insert_cols)
+    ph = ",".join("?" * len(insert_cols))
+    insert = f"INSERT OR IGNORE INTO readings ({col_list}) VALUES ({ph})"
     appended = 0
     for ts, sha in commits:
         try:
@@ -140,9 +185,10 @@ def main():
         for group, field in field_order:
             if field not in field_vals:
                 field_vals[field] = clean_value(gvals[group])
-        vals = [field_vals.get(k) for k in METRICS]
-        vals = [v if isinstance(v, (int, float)) else None for v in vals]
-        cur = conn.execute(insert, (ts, *vals))
+        nums = [field_vals.get(k) for k in METRICS]
+        nums = [v if isinstance(v, (int, float)) else None for v in nums]
+        texts = [clean_text(field_vals.get(s)) for s, _ in TEXT_FIELDS]
+        cur = conn.execute(insert, (ts, *nums, *texts))
         appended += cur.rowcount
 
     conn.commit()

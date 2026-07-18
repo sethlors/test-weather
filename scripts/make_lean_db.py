@@ -34,7 +34,31 @@ METRICS = [
     "dailyRain", "stormRain", "monthlyRain", "totalRain",
 ]
 
+# Non-numeric fields carried through verbatim, as (source column, lean column).
+# They aren't charted — they feed the dashboard's compass and barometer-trend
+# readout — and neither can be derived from the numeric series, so the station's
+# own reported value is the only source. Kept as TEXT because that's what the
+# station emits: 16-point compass strings ("SSW") and trend phrases ("Steady").
+TEXT_FIELDS = [
+    ("windDirection", "windDirection"),
+    ("BarTrend", "barTrend"),
+]
+
+# What the station writes when it has no reading. Stored as NULL, so the
+# dashboard's existing "is it null?" checks are the only test a consumer needs.
+NO_VALUE = "---"
+
 PAGE_SIZE = 8192
+
+
+def clean_text(v):
+    """Normalize a station text field to a value or None."""
+    if not isinstance(v, str):
+        return None
+    v = v.strip()
+    if not v or v == NO_VALUE:
+        return None
+    return v
 
 
 def main():
@@ -51,10 +75,15 @@ def main():
     dst = sqlite3.connect(args.out)
     dst.execute(f"PRAGMA page_size={PAGE_SIZE}")
     dst.execute("PRAGMA journal_mode=DELETE")
-    cols = ", ".join(f'"{m}" REAL' for m in METRICS)
+    cols = ", ".join(
+        [f'"{m}" REAL' for m in METRICS]
+        + [f'"{c}" TEXT' for _, c in TEXT_FIELDS]
+    )
     dst.execute(f"CREATE TABLE readings (ts INTEGER PRIMARY KEY, {cols})")
 
-    sel_cols = ", ".join(f'"{m}"' for m in METRICS)
+    sel_cols = ", ".join(
+        [f'"{m}"' for m in METRICS] + [f'"{s}"' for s, _ in TEXT_FIELDS]
+    )
     rows = src.execute(
         f"SELECT commit_date, {sel_cols} FROM readings ORDER BY commit_date"
     ).fetchall()
@@ -66,9 +95,13 @@ def main():
         if ts in seen:
             continue
         seen.add(ts)
-        batch.append((ts, *[r[m] for m in METRICS]))
+        batch.append((
+            ts,
+            *[r[m] for m in METRICS],
+            *[clean_text(r[s]) for s, _ in TEXT_FIELDS],
+        ))
 
-    ph = ",".join("?" * (len(METRICS) + 1))
+    ph = ",".join("?" * (len(METRICS) + len(TEXT_FIELDS) + 1))
     dst.executemany(f"INSERT INTO readings VALUES ({ph})", batch)
     dst.commit()
     dst.execute("VACUUM")
