@@ -1,5 +1,8 @@
 __pycache__/
 *.pyc
 full_weather.db
+# The accumulating db lives on the force-pushed `weather-data` branch and is
+# assembled into the Pages artifact at deploy time — never tracked on main.
+weather.db
 .DS_Store
 .idea/

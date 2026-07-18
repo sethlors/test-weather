@@ -1,74 +1,129 @@
 name: Sync weather db
 
 # Keeps the published dashboard current by pulling new readings from the live
-# weather repo (tvLors/Davis_Weather) and deploying them.
+# weather repo (tvLors/Davis_Weather) and deploying them to GitHub Pages.
 #
-# Design notes:
+# Architecture:
 # - Every commit of Detail-All.htm since the last run is captured (not just the
-#   "current" reading), so no 5-minute sample is lost even if the schedule is
-#   delayed or coalesced. Cadence therefore only affects freshness, not
-#   completeness.
-# - The site is published to a FORCE-PUSHED, single-commit `gh-pages` branch.
-#   That keeps the ~4.5 MB db (which changes constantly) out of `main`'s history
-#   so the repo never bloats, and stays within Pages' build-rate soft limit.
+#   "current" reading), so no 5-minute sample is lost even when GitHub's
+#   scheduler delays, coalesces, or skips a run. Cadence therefore only affects
+#   freshness, never completeness.
+# - The accumulating ~4.5 MB weather.db lives on a dedicated, single-commit,
+#   force-pushed `weather-data` branch. It never touches `main`'s history (no
+#   bloat) and is not a hosting branch.
+# - The site is published via the GitHub Actions Pages pipeline (artifact +
+#   deploy-pages), not a hosting branch. There is no gh-pages branch to force
+#   push and no duplicate main-branch Pages builds.
+# - We only persist + redeploy when the data actually changed (or on a manual/
+#   code push), keeping us well under Pages deployment rate limits.
 #
-# One-time setup: repo Settings -> Pages -> Source: Deploy from a branch ->
-# Branch: gh-pages / (root).
+# One-time setup: Settings -> Pages -> Source: "GitHub Actions". The
+# `weather-data` branch must be seeded once with an initial weather.db.
 
 on:
   push:
-    branches: [main]          # deploy UI/script changes immediately, not on next cron
+    branches: [main]          # deploy UI/script changes immediately
   schedule:
-    # every 15 min, offset from :00/:15/:30/:45 — GitHub delays or skips
-    # scheduled runs at the high-contention minute marks; backfill means any
-    # missed run still captures all 5-min data on the next one
-    - cron: "4,19,34,49 * * * *"
+    # every ~15 min, offset off :00/:15/:30/:45 — GitHub deprioritizes runs at
+    # the high-contention minute marks. Backfill means any delayed/skipped run
+    # still captures all 5-min data on the next one.
+    - cron: "3,18,33,48 * * * *"
   workflow_dispatch: {}       # manual "Run workflow" button
 
 permissions:
-  contents: write
+  contents: write   # push the db to the weather-data branch
+  pages: write      # deploy to Pages
+  id-token: write   # OIDC token for deploy-pages
 
 concurrency:
-  group: sync-weather-db
+  group: weather-sync-deploy
   cancel-in-progress: false
 
 jobs:
-  sync:
+  sync-and-deploy:
     runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
     steps:
-      - uses: actions/checkout@v4        # main: scripts + a db snapshot to bootstrap from
+      - uses: actions/checkout@v4        # main: scripts + site assets
 
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Restore live db from gh-pages (fallback to main's snapshot)
+      - name: Restore accumulated db from the weather-data branch
         run: |
-          git fetch origin gh-pages --depth=1 || true
-          if git cat-file -e origin/gh-pages:weather.db 2>/dev/null; then
-            git show origin/gh-pages:weather.db > weather.db
-            echo "restored db from gh-pages"
+          git fetch origin weather-data --depth=1 || true
+          if git cat-file -e origin/weather-data:weather.db 2>/dev/null; then
+            git show origin/weather-data:weather.db > weather.db
+            echo "restored db from weather-data branch"
           else
-            echo "gh-pages has no db yet; bootstrapping from main's snapshot"
+            echo "::error::weather-data branch has no weather.db; seed it once (see workflow header)"
+            exit 1
           fi
 
       - name: Append new readings
+        id: sync
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # raises API rate limit
-        run: python3 scripts/sync_from_remote.py --db weather.db
-
-      - name: Publish to gh-pages
         run: |
-          rm -rf deploy && mkdir deploy
-          cp index.html .nojekyll weather.db deploy/
-          cp -r static deploy/static
-          cd deploy
-          git init -q
-          git checkout -q -b gh-pages
-          git config user.name  "weather-sync-bot"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -A
-          git commit -q -m "Deploy $(date -u +%FT%TZ)"
-          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+          before=$(sha256sum weather.db | cut -d' ' -f1)
+          python3 scripts/sync_from_remote.py --db weather.db | tee -a "$GITHUB_STEP_SUMMARY"
+          after=$(sha256sum weather.db | cut -d' ' -f1)
+          if [ "$before" != "$after" ]; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Redeploy when data changed, or on a manual run / code push (so UI and
+      # script edits publish immediately). A scheduled run that found no new
+      # readings is a no-op — nothing to persist or publish.
+      - name: Decide whether to publish
+        id: gate
+        run: |
+          if [ "${{ steps.sync.outputs.changed }}" = "true" ] || [ "${{ github.event_name }}" != "schedule" ]; then
+            echo "publish=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "publish=false; no new data on a scheduled run" >> "$GITHUB_STEP_SUMMARY"
+            echo "publish=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Persist db back to the weather-data branch
+        if: steps.gate.outputs.publish == 'true' && steps.sync.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          tmp=$(mktemp -d)
+          cp weather.db "$tmp/weather.db"
+          cd "$tmp"
+          git init -q
+          git checkout -q -b weather-data
+          git config user.name  "weather-sync-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add weather.db
+          git commit -q -m "data $(date -u +%FT%TZ)"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" weather-data
+
+      - name: Assemble site
+        if: steps.gate.outputs.publish == 'true'
+        run: |
+          rm -rf _site && mkdir _site
+          cp index.html .nojekyll weather.db _site/
+          cp -r static _site/static
+
+      - name: Configure Pages
+        if: steps.gate.outputs.publish == 'true'
+        uses: actions/configure-pages@v5
+
+      - name: Upload site artifact
+        if: steps.gate.outputs.publish == 'true'
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+      - name: Deploy to Pages
+        id: deploy
+        if: steps.gate.outputs.publish == 'true'
+        uses: actions/deploy-pages@v4

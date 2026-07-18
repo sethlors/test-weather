@@ -20,10 +20,13 @@ Usage:
     python3 scripts/make_lean_db.py --src ../Davis_Weather/weather.db --out weather.db
 """
 import argparse
-import calendar
-import datetime
 import os
 import sqlite3
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from weather_ts import epoch_from_iso, format_utc  # noqa: E402
 
 METRICS = [
     "outsideTemp", "outsideDewPt", "windChill", "outsideHeatIndex",
@@ -32,11 +35,6 @@ METRICS = [
 ]
 
 PAGE_SIZE = 8192
-
-
-def wall_clock_epoch(iso: str) -> int:
-    dt = datetime.datetime.fromisoformat(iso)
-    return calendar.timegm(dt.timetuple())  # treat wall-clock fields as UTC
 
 
 def main():
@@ -64,7 +62,7 @@ def main():
     seen = set()
     batch = []
     for r in rows:
-        ts = wall_clock_epoch(r["commit_date"])
+        ts = epoch_from_iso(r["commit_date"])
         if ts in seen:
             continue
         seen.add(ts)
@@ -80,9 +78,8 @@ def main():
     lo, hi = dst.execute("SELECT MIN(ts), MAX(ts) FROM readings").fetchone()
     dst.close()
     src.close()
-    fmt = lambda t: datetime.datetime.fromtimestamp(t, datetime.timezone.utc).strftime("%Y-%m-%d %H:%M:%S")
     print(f"wrote {n} rows to {args.out} ({os.path.getsize(args.out)/1e6:.2f} MB)")
-    print("range:", fmt(lo), "->", fmt(hi), "(wall clock)")
+    print("range:", format_utc(lo), "->", format_utc(hi), "(wall clock)")
 
 
 if __name__ == "__main__":

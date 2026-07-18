@@ -22,11 +22,9 @@ Env:
     GITHUB_TOKEN  optional; raises the API rate limit (used automatically in CI)
 """
 import argparse
-import calendar
 import datetime
 import json
 import os
-import re
 import sqlite3
 import ssl
 import sys
@@ -44,6 +42,7 @@ except Exception:
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from build_weather_db import build_pattern, clean_value  # noqa: E402
+from weather_ts import epoch_from_message, format_utc  # noqa: E402
 
 OWNER = "tvLors"
 REPO = "Davis_Weather"
@@ -56,9 +55,6 @@ METRICS = [
     "dailyRain", "stormRain", "monthlyRain", "totalRain",
 ]
 
-MSG_TS = re.compile(r"(\d{2})/(\d{2})/(\d{4})\s+(\d{1,2}):(\d{2}):(\d{2})")
-
-
 def http_get(url, token=None, raw=False):
     req = urllib.request.Request(url)
     req.add_header("User-Agent", "davis-weather-sync")
@@ -68,14 +64,6 @@ def http_get(url, token=None, raw=False):
         req.add_header("Accept", "application/vnd.github+json")
     with urllib.request.urlopen(req, timeout=30, context=_SSL_CTX) as r:
         return r.read()
-
-
-def msg_to_ts(message):
-    m = MSG_TS.search(message)
-    if not m:
-        return None
-    mo, da, yr, hh, mm, ss = map(int, m.groups())
-    return calendar.timegm(datetime.datetime(yr, mo, da, hh, mm, ss).timetuple())
 
 
 def list_new_commits(max_ts, token):
@@ -94,7 +82,7 @@ def list_new_commits(max_ts, token):
         if not commits:
             break
         for c in commits:
-            ts = msg_to_ts(c["commit"]["message"])
+            ts = epoch_from_message(c["commit"]["message"])
             if ts is not None and ts > max_ts:
                 out.append((ts, c["sha"]))
         if len(commits) < 100:
@@ -118,6 +106,8 @@ def main():
     conn = sqlite3.connect(args.db)
     row = conn.execute("SELECT MAX(ts) FROM readings").fetchone()
     max_ts = row[0] if row and row[0] is not None else 0
+    if max_ts:
+        print(f"newest stored reading: {format_utc(max_ts)} (wall clock)")
 
     # current template -> extraction regex
     htx = http_get(
@@ -157,7 +147,17 @@ def main():
 
     conn.commit()
     conn.close()
-    print(f"appended {appended} new row(s); newest commit ts now covered: {commits[-1][0]}")
+    # After backfilling, our newest reading == the newest upstream commit we
+    # saw this run, so we are caught up by construction. `ts` is wall-clock
+    # treated as UTC, so it can't be compared to real time without the
+    # station's tz offset; report the upstream span we closed instead.
+    newest = commits[-1][0]
+    span_min = (newest - commits[0][0]) / 60.0
+    print(
+        f"appended {appended} new row(s), closing a {span_min:.0f} min gap "
+        f"across {len(commits)} upstream commit(s); "
+        f"newest reading now {format_utc(newest)} (wall clock)"
+    )
 
 
 if __name__ == "__main__":
