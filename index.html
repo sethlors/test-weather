@@ -541,13 +541,22 @@ function tile(label, value, unit, extraCls, sub) {
   </div>`;
 }
 
-function renderStats(data, unit, accent) {
+function renderStats(data, unit, accent, res, dailyTotal) {
+  // the series is bucketed, so name the comparison window honestly
+  const heroLabel = dailyTotal ? "Latest Day Total"
+    : res === "raw" ? "Latest Reading"
+    : res === "hourly" ? "Latest Hour (avg)"
+    : "Latest Day (avg)";
+  const vsLabel = dailyTotal ? "vs prior day"
+    : res === "raw" ? "vs prior reading"
+    : res === "hourly" ? "vs prior hour"
+    : "vs prior day";
   const vals = data.avg.filter(v => v != null);
   const el = document.getElementById("stats");
   el.style.setProperty("--accent", accent);
   el.style.setProperty("--accent-soft", hexA(accent, 0.14));
   if (!vals.length) {
-    el.innerHTML = tile("Latest", "–", unit, "hero") + tile("Min", "–", unit) + tile("Avg", "–", unit) + tile("Max", "–", unit);
+    el.innerHTML = tile(heroLabel, "–", unit, "hero") + tile("Min", "–", unit) + tile("Avg", "–", unit) + tile("Max", "–", unit);
     return;
   }
   const min = Math.min(...vals), max = Math.max(...vals);
@@ -559,16 +568,16 @@ function renderStats(data, unit, accent) {
   if (prev != null) {
     const d = last - prev;
     if (Math.abs(d) < 0.005) {
-      sub = `<span>No change vs previous</span>`;
+      sub = `<span>No change ${vsLabel}</span>`;
     } else {
       const dir = d > 0 ? "up" : "down";
       const icon = d > 0 ? ARROW_UP : ARROW_DN;
-      sub = `<span class="delta ${dir}">${icon}${fmtNum(Math.abs(d))} ${unit}</span><span>vs previous</span>`;
+      sub = `<span class="delta ${dir}">${icon}${fmtNum(Math.abs(d))} ${unit}</span><span>${vsLabel}</span>`;
     }
   }
 
   el.innerHTML =
-    tile("Latest", fmtNum(last), unit, "hero", sub) +
+    tile(heroLabel, fmtNum(last), unit, "hero", sub) +
     tile("Minimum", fmtNum(min), unit) +
     tile("Average", fmtNum(avg), unit) +
     tile("Maximum", fmtNum(max), unit);
@@ -652,7 +661,7 @@ async function loadSeries() {
   state.lastMeta = { ...meta, key: metric };
   document.getElementById("csvBtn").hidden = !data.t.length;
   drawChart(data, meta, res !== "raw" && !meta.dailyTotal);
-  renderStats(data, meta.unit, accent);
+  renderStats(data, meta.unit, accent, res, !!meta.dailyTotal);
 
   // shareable URL state
   const active = document.querySelector(".segmented button.active");
