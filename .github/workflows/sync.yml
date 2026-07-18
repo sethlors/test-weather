@@ -16,6 +16,8 @@ name: Sync weather db
 # Branch: gh-pages / (root).
 
 on:
+  push:
+    branches: [main]          # deploy UI/script changes immediately, not on next cron
   schedule:
     # every 15 min, offset from :00/:15/:30/:45 — GitHub delays or skips
     # scheduled runs at the high-contention minute marks; backfill means any
