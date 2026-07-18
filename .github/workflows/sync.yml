@@ -1,0 +1,69 @@
+name: Sync weather db
+
+# Keeps the published dashboard current by pulling new readings from the live
+# weather repo (tvLors/Davis_Weather) and deploying them.
+#
+# Design notes:
+# - Every commit of Detail-All.htm since the last run is captured (not just the
+#   "current" reading), so no 5-minute sample is lost even if the schedule is
+#   delayed or coalesced. Cadence therefore only affects freshness, not
+#   completeness.
+# - The site is published to a FORCE-PUSHED, single-commit `gh-pages` branch.
+#   That keeps the ~4.5 MB db (which changes constantly) out of `main`'s history
+#   so the repo never bloats, and stays within Pages' build-rate soft limit.
+#
+# One-time setup: repo Settings -> Pages -> Source: Deploy from a branch ->
+# Branch: gh-pages / (root).
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"   # ~every 15 min; backfill => still captures all 5-min data
+  workflow_dispatch: {}       # manual "Run workflow" button
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-weather-db
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4        # main: scripts + a db snapshot to bootstrap from
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Restore live db from gh-pages (fallback to main's snapshot)
+        run: |
+          git fetch origin gh-pages --depth=1 || true
+          if git cat-file -e origin/gh-pages:weather.db 2>/dev/null; then
+            git show origin/gh-pages:weather.db > weather.db
+            echo "restored db from gh-pages"
+          else
+            echo "gh-pages has no db yet; bootstrapping from main's snapshot"
+          fi
+
+      - name: Append new readings
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}   # raises API rate limit
+        run: python3 scripts/sync_from_remote.py --db weather.db
+
+      - name: Publish to gh-pages
+        run: |
+          rm -rf deploy && mkdir deploy
+          cp index.html .nojekyll weather.db deploy/
+          cp -r static deploy/static
+          cd deploy
+          git init -q
+          git checkout -q -b gh-pages
+          git config user.name  "weather-sync-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "Deploy $(date -u +%FT%TZ)"
+          git push -f "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git" gh-pages
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}

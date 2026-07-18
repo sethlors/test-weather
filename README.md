@@ -34,10 +34,10 @@ git history of Detail-All.htm ┘
 | `index.html` | The dashboard (loads sql.js + uPlot, queries `weather.db`) |
 | `weather.db` | Lean SQLite db: `ts` + 12 metrics, ~56k rows |
 | `static/` | Vendored `sql.js` (wasm) and `uPlot` — all self-hosted |
-| `scripts/build_weather_db.py` | Full extractor from `Detail-All.htm` git history |
+| `scripts/build_weather_db.py` | Full extractor from `Detail-All.htm` git history (one-time build) |
 | `scripts/make_lean_db.py` | Full db → lean web db |
-| `scripts/update_weather_db.py` | **Incremental** append of new readings |
-| `scripts/update-db.yml.example` | GitHub Actions workflow to auto-update the db |
+| `scripts/sync_from_remote.py` | Pulls new readings from the live repo and appends them |
+| `.github/workflows/sync.yml` | Scheduled Action that runs the sync every ~5 min |
 
 ## Metrics included
 
@@ -66,28 +66,55 @@ python3 -m http.server 8000
 
 ## Deploying to GitHub Pages
 
-This repo is already a static site at its root. Enable Pages once:
+The dashboard is published to a **`gh-pages`** branch (not `main`) — see the
+next section for why. Enable Pages once:
 
 1. Repo **Settings → Pages**
 2. **Source: Deploy from a branch**
-3. Branch: **`main`**, folder: **`/ (root)`**, Save
+3. Branch: **`gh-pages`**, folder: **`/ (root)`**, Save
 
 The site publishes at `https://<user>.github.io/test-weather/`.
 The `.nojekyll` file ensures `static/` and the `.wasm` are served as-is.
 
+`main` holds the source (code + a `weather.db` snapshot used to bootstrap and
+for local dev); the live, continuously-updated db lives on `gh-pages`.
+
 ## Keeping it updated automatically
 
-`weather.db` is a static file, so something has to regenerate it when new
-readings arrive. The intended setup (for the repo that actually receives the
-5-minute weather pushes, e.g. `Davis_Weather`):
+`weather.db` is a static file, so something has to refresh it when new readings
+arrive. This repo does that entirely on its own — no access to the weather
+machine or the source repo's settings required.
 
-1. Copy `scripts/*.py` and `scripts/update-db.yml.example` →
-   `.github/workflows/update-db.yml` into that repo.
-2. On each weather push, the workflow runs `update_weather_db.py` to append the
-   new reading(s) to `weather.db` and commits it back (tagged `[skip ci]` so it
-   doesn't loop).
-3. GitHub Pages serves the refreshed db within about a minute.
+`.github/workflows/sync.yml` runs `scripts/sync_from_remote.py` on a ~15-minute
+schedule. Each run:
 
-`update_weather_db.py` only parses commits newer than the newest row already in
-the db, so a normal run (one new commit) finishes in a fraction of a second
-rather than re-walking all ~56k commits.
+1. restores the current db from the `gh-pages` branch,
+2. reads the newest timestamp in it,
+3. asks the GitHub API for commits of `Detail-All.htm` in the live repo
+   (`tvLors/Davis_Weather`) newer than that,
+4. fetches each of those commits' raw `Detail-All.htm`, parses the metrics, and
+   appends the rows (`INSERT OR IGNORE`),
+5. force-pushes the site + updated db to `gh-pages` as a single commit.
+
+Because it captures **every commit** since the last run — not just whatever the
+"current" reading happens to be — no 5-minute sample is lost even when GitHub's
+scheduler delays, coalesces, or skips runs. **Cadence only affects freshness of
+the latest point, never completeness of the history**, which is why a 15-minute
+schedule is fine (and keeps well under the Pages build-rate soft limit).
+
+### Why a force-pushed `gh-pages` branch?
+
+`weather.db` (~4.5 MB) changes on every reading. Committing it to `main` every
+few minutes would balloon the git history by hundreds of MB/day (binaries don't
+delta well) and blow past GitHub Pages' ~10-builds-per-hour soft limit. Instead
+the workflow rewrites `gh-pages` as a **single commit** each run — so the
+published branch never accumulates history — while `main` keeps normal,
+lightweight source history.
+
+The row timestamp is the commit's **local wall-clock time**, read from the
+commit message (`Weather update: Fri 07/17/2026 20:57:27`) and stored as UTC —
+matching how the historical rows were built, so re-processing a commit is a
+harmless no-op.
+
+> Note: GitHub disables scheduled workflows on a repo after ~60 days of no
+> activity in the repo. Any push (or a manual **Run workflow**) re-arms it.
