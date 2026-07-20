@@ -57,6 +57,26 @@ writes `---` when it has no reading; both builders normalize that to `NULL`.
 (Inside temp/humidity aren't available — the source page only embeds those as
 images, with no text value to extract.)
 
+## Other Iowa stations
+
+The **Station** picker lets you view a curated list of ~19 Iowa airport
+ASOS/AWOS stations instead of the home station, sourced from
+[api.weather.gov](https://www.weather.gov/documentation/services-web-api) --
+no API key, CORS-open, queried straight from the browser (no backend
+involved). Two real limits, both surfaced in the UI when picking one:
+
+- **~7 days of history only** (`NWS_HISTORY_DAYS` in `index.html`) -- it's a
+  rolling observation cache, not an archive. Longer range presets are
+  disabled, not hidden, so switching stations doesn't shift the layout.
+- **No rain data** -- ASOS doesn't report cumulative rain totals in a
+  comparable shape, so the four rain metrics are only offered for the home
+  station.
+
+The home station's `readings.ts` is wall-clock time stored *as* UTC (see
+Timestamps below); NWS timestamps are genuine UTC. `realInstantToWallEpoch()`
+/ `wallEpochToRealInstant()` in `index.html` convert between the two (via
+`STATION.tz`, so it's DST-aware) so both sources land on the same x-axis.
+
 ### Adding a column
 
 Add the column to the Postgres `readings` table (`ALTER TABLE ... ADD COLUMN`,

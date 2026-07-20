@@ -119,6 +119,8 @@
   }
   .segmented button:hover { color: var(--ink); }
   .segmented button.active { background: var(--surface); color: var(--accent); box-shadow: var(--shadow); }
+  .segmented button:disabled { color: var(--muted); opacity: .4; cursor: not-allowed; }
+  .segmented button:disabled:hover { color: var(--muted); }
 
   /* ---- KPI row ---- */
   .kpis { display: grid; grid-template-columns: 1.4fr 1fr 1fr 1fr; gap: 14px; margin-bottom: 16px; }
@@ -351,6 +353,10 @@
 
   <div class="card controls">
     <div class="field">
+      <span class="flabel">Station</span>
+      <select id="station"></select>
+    </div>
+    <div class="field">
       <span class="flabel">Metric</span>
       <select id="metric"></select>
     </div>
@@ -449,7 +455,7 @@ const METRICS = {
   totalRain:        { label: "Year Rain Total",     unit: "in",    accent: ["#2a78d6", "#3987e5"] },
 };
 
-const state = { db: null, dbStart: null, dbEnd: null, lastData: null, lastMeta: null, latest: null };
+const state = { db: null, dbStart: null, dbEnd: null, lastData: null, lastMeta: null, latest: null, station: null };
 let chart = null;
 
 // icons for the current-conditions strip
@@ -503,6 +509,53 @@ const STATION = {
   tz: "America/Chicago",   // drives sun times; must be the station's real zone
   label: "Des Moines metro, Iowa",
 };
+
+/* ---------- other Iowa stations (NWS/ASOS) ---------- */
+// Curated to airport ASOS/AWOS sites, which report all fields reliably --
+// the full NWS station list for Iowa (~500+) includes many sparse mesonet
+// sites with mostly-null observations. api.weather.gov needs no API key and
+// is CORS-open, so these are queried straight from the browser -- no backend
+// involved. Unlike the home station, it only retains ~7 days of history and
+// has no rainfall totals (see NWS_METRICS below).
+const IA_STATIONS = [
+  { id: "KDSM", name: "Des Moines" },
+  { id: "KCID", name: "Cedar Rapids" },
+  { id: "KALO", name: "Waterloo" },
+  { id: "KDBQ", name: "Dubuque" },
+  { id: "KSUX", name: "Sioux City" },
+  { id: "KOTM", name: "Ottumwa" },
+  { id: "KMCW", name: "Mason City" },
+  { id: "KFOD", name: "Fort Dodge" },
+  { id: "KAMW", name: "Ames" },
+  { id: "KIOW", name: "Iowa City" },
+  { id: "KBRL", name: "Burlington" },
+  { id: "KDVN", name: "Davenport" },
+  { id: "KEST", name: "Estherville" },
+  { id: "KSPW", name: "Spencer" },
+  { id: "KMIW", name: "Marshalltown" },
+  { id: "KCWI", name: "Clinton" },
+  { id: "KPEA", name: "Pella" },
+  { id: "KFFL", name: "Fairfield" },
+  { id: "KLWD", name: "Lamoni" },
+].sort((a, b) => a.name.localeCompare(b.name));
+
+// Metrics available from NWS observations, mapped to this dashboard's metric
+// keys and unit-converted to match (°F / mph / inHg, same as the home
+// station). No rain fields -- ASOS doesn't report cumulative rain totals in
+// a comparable shape, so those METRICS entries are hidden for other stations.
+function cToF(c) { return c == null ? null : c * 9 / 5 + 32; }
+function paToInHg(pa) { return pa == null ? null : pa * 0.0002953; }
+function kmhToMph(k) { return k == null ? null : k * 0.621371; }
+const NWS_METRICS = {
+  outsideTemp:      { prop: "temperature",       conv: cToF },
+  outsideDewPt:     { prop: "dewpoint",           conv: cToF },
+  windChill:        { prop: "windChill",          conv: cToF },
+  outsideHeatIndex: { prop: "heatIndex",          conv: cToF },
+  outsideHumidity:  { prop: "relativeHumidity",   conv: v => v },
+  barometer:        { prop: "barometricPressure", conv: paToInHg },
+  windSpeed:        { prop: "windSpeed",          conv: kmhToMph },
+};
+const NWS_HISTORY_DAYS = 7;   // api.weather.gov's rolling observation cache
 
 /* ---------- solar geometry ---------- */
 // NOAA's sunrise equation. Pure arithmetic — no dependency, no network, and it
@@ -611,7 +664,10 @@ function pickResolution(startSec, endSec) {
   return "daily";
 }
 
+function isHomeStation() { return !state.station; }
+
 async function getSeries(metric, startSec, endSec, resolution) {
+  if (!isHomeStation()) return getNwsSeries(state.station, metric, startSec, endSec, resolution);
   if (METRICS[metric].dailyTotal) {
     // cumulative counter that resets daily: the day's total is the max, one bar per day
     const { data, error } = await sb.rpc("readings_daily_total", { metric, start_ts: startSec, end_ts: endSec });
@@ -627,6 +683,73 @@ async function getSeries(metric, startSec, endSec, resolution) {
   const { data, error } = await sb.rpc("readings_bucketed", { metric, start_ts: startSec, end_ts: endSec, span_sec: span });
   if (error) throw error;
   return { t: data.map(r => r.t), avg: data.map(r => r.avg), min: data.map(r => r.mn), max: data.map(r => r.mx) };
+}
+
+/* ---------- other Iowa stations (NWS observations) ---------- */
+// A real instant -> the wall-clock it displays as in STATION.tz, expressed
+// as if that wall-clock were UTC -- the same convention every timestamp in
+// this app already uses (see the note above fmtDate). NWS timestamps are
+// genuine UTC, so this is what makes their points land on the right spot on
+// an x-axis built around wall-clock-as-UTC.
+function realInstantToWallEpoch(date) {
+  const parts = Object.fromEntries(
+    new Intl.DateTimeFormat("en-CA", {
+      timeZone: STATION.tz, hour12: false,
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit", second: "2-digit",
+    }).formatToParts(date).map(x => [x.type, x.value])
+  );
+  const hour = parts.hour === "24" ? 0 : +parts.hour;   // some locales say "24" for midnight
+  return Date.UTC(+parts.year, +parts.month - 1, +parts.day, hour, +parts.minute, +parts.second) / 1000;
+}
+function nowWallEpoch() { return realInstantToWallEpoch(new Date()); }
+
+// Inverse of the above: a wall-clock-as-UTC epoch -> the real instant that
+// produces it in STATION.tz. One correction pass handles DST correctly
+// outside the ~1hr transition window itself, which is precise enough for
+// picking a query range.
+function wallEpochToRealInstant(epochSec) {
+  const guess = epochSec * 1000;
+  const drift = realInstantToWallEpoch(new Date(guess)) - epochSec;
+  return new Date(guess - drift * 1000);
+}
+
+async function fetchNwsObservations(stationId, startSec, endSec) {
+  const start = wallEpochToRealInstant(startSec).toISOString();
+  const end = wallEpochToRealInstant(endSec).toISOString();
+  const url = `https://api.weather.gov/stations/${stationId}/observations?start=${start}&end=${end}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error("NWS request failed: HTTP " + res.status);
+  const geo = await res.json();
+  return geo.features
+    .map(f => ({ t: realInstantToWallEpoch(new Date(f.properties.timestamp)), p: f.properties }))
+    .sort((a, b) => a.t - b.t);
+}
+
+async function getNwsSeries(stationId, metric, startSec, endSec, resolution) {
+  const spec = NWS_METRICS[metric];
+  if (!spec) return { t: [], avg: [], min: null, max: null };
+  const obs = await fetchNwsObservations(stationId, startSec, endSec);
+  const pts = obs
+    .map(o => ({ t: o.t, v: spec.conv(o.p[spec.prop] && o.p[spec.prop].value) }))
+    .filter(p => p.v != null && p.t >= startSec && p.t <= endSec);
+  if (resolution === "raw") {
+    return { t: pts.map(p => p.t), avg: pts.map(p => p.v), min: null, max: null };
+  }
+  const span = resolution === "hourly" ? 3600 : 86400;
+  const buckets = new Map();
+  for (const p of pts) {
+    const b = Math.floor(p.t / span) * span;
+    if (!buckets.has(b)) buckets.set(b, []);
+    buckets.get(b).push(p.v);
+  }
+  const bs = [...buckets.keys()].sort((a, b) => a - b);
+  return {
+    t: bs,
+    avg: bs.map(b => { const vs = buckets.get(b); return vs.reduce((s, v) => s + v, 0) / vs.length; }),
+    min: bs.map(b => Math.min(...buckets.get(b))),
+    max: bs.map(b => Math.max(...buckets.get(b))),
+  };
 }
 
 /* ---------- tooltip plugin ---------- */
@@ -1135,7 +1258,8 @@ function exportCsv() {
   const blob = new Blob([lines.join("\n")], { type: "text/csv" });
   const a = document.createElement("a");
   a.href = URL.createObjectURL(blob);
-  a.download = `${meta.key}_${document.getElementById("start").value}_${document.getElementById("end").value}.csv`;
+  const stationSuffix = isHomeStation() ? "" : `_${state.station}`;
+  a.download = `${meta.key}${stationSuffix}_${document.getElementById("start").value}_${document.getElementById("end").value}.csv`;
   a.click();
   URL.revokeObjectURL(a.href);
 }
@@ -1152,14 +1276,17 @@ async function loadSeries() {
 
   // accent for chart title swatch
   const accent = meta.accent[isDark() ? 1 : 0];
+  const stationName = isHomeStation() ? null : IA_STATIONS.find(s => s.id === state.station)?.name;
   document.getElementById("chartTitle").innerHTML =
-    `<span class="swatch" style="background:${accent}"></span>${meta.label} <span style="color:var(--muted);font-weight:500">(${meta.unit})</span>`;
+    `<span class="swatch" style="background:${accent}"></span>${meta.label} <span style="color:var(--muted);font-weight:500">(${meta.unit})</span>` +
+    (stationName ? ` <span style="color:var(--muted);font-weight:500">&middot; ${stationName}, IA</span>` : "");
 
   document.getElementById("resHint").textContent = (
     meta.dailyTotal ? "One bar per day = that day's rain total" :
     res === "raw" ? "Full 5-minute resolution" :
     res === "hourly" ? "Hourly averages · band = min/max per hour" :
-    "Daily averages · band = min/max per day") + " · drag to zoom, double-click to reset";
+    "Daily averages · band = min/max per day") + " · drag to zoom, double-click to reset" +
+    (stationName ? ` · NWS observations, last ${NWS_HISTORY_DAYS} days only` : "");
   document.getElementById("chart").classList.add("loading");
   const data = await getSeries(metric, startSec, endSec, res);
   state.lastData = data;
@@ -1194,14 +1321,38 @@ function applyHashState() {
   return false;
 }
 
+// Home station's bounds come from Supabase (state.dbStart/dbEnd, loaded once
+// and kept current by the realtime subscription). Other stations only have
+// NWS_HISTORY_DAYS of scrollback, ending "now" -- computed fresh each call
+// since, unlike the home station, nothing pushes updates for it.
+function currentBounds() {
+  if (isHomeStation()) return { lo: state.dbStart, hi: state.dbEnd };
+  const hi = nowWallEpoch();
+  return { lo: hi - NWS_HISTORY_DAYS * 86400, hi };
+}
+
 function setPresetActive(days) {
   document.querySelectorAll(".segmented button").forEach(b => b.classList.toggle("active", b.dataset.days === String(days)));
 }
+// Presets longer than the other stations' retention window are disabled
+// (not hidden, so the layout doesn't jump when switching stations back and
+// forth) rather than clamped -- picking "30D" for an external station would
+// silently mean something different from picking it for the home station.
+function updatePresetAvailability() {
+  const home = isHomeStation();
+  document.querySelectorAll(".segmented button").forEach(b => {
+    const days = b.dataset.days;
+    const tooLong = !home && days !== "all" && Number(days) > NWS_HISTORY_DAYS;
+    b.disabled = tooLong || (!home && days === "all");
+    b.title = b.disabled ? `Only the last ${NWS_HISTORY_DAYS} days are available for other stations` : "";
+  });
+}
 function applyPreset(days) {
-  const end = new Date(state.dbEnd * 1000);
-  let start = days === "all" ? new Date(state.dbStart * 1000)
+  const bounds = currentBounds();
+  const end = new Date(bounds.hi * 1000);
+  let start = days === "all" ? new Date(bounds.lo * 1000)
                              : new Date(end.getTime() - days * 86400000);
-  if (start.getTime() / 1000 < state.dbStart) start = new Date(state.dbStart * 1000);
+  if (start.getTime() / 1000 < bounds.lo) start = new Date(bounds.lo * 1000);
   document.getElementById("start").value = fmtDate(start);
   document.getElementById("end").value = fmtDate(end);
   setPresetActive(days);
@@ -1212,7 +1363,7 @@ function buildPresets() {
   [["1D", 1], ["7D", 7], ["30D", 30], ["90D", 90], ["1Y", 365], ["All", "all"]].forEach(([label, days]) => {
     const b = document.createElement("button");
     b.textContent = label; b.dataset.days = String(days);
-    b.onclick = () => applyPreset(days);
+    b.onclick = () => { if (!b.disabled) applyPreset(days); };
     el.appendChild(b);
   });
 }
@@ -1356,6 +1507,45 @@ function localHM_fromWall(sec) {
   return { h: d.getUTCHours(), m: d.getUTCMinutes() };
 }
 
+function populateStationPicker() {
+  const sel = document.getElementById("station");
+  const home = document.createElement("option");
+  home.value = ""; home.textContent = `${STATION.label} (live)`;
+  sel.appendChild(home);
+  const grp = document.createElement("optgroup");
+  grp.label = `Other Iowa stations (last ${NWS_HISTORY_DAYS} days, NWS)`;
+  IA_STATIONS.forEach(s => {
+    const o = document.createElement("option");
+    o.value = s.id; o.textContent = s.name;
+    grp.appendChild(o);
+  });
+  sel.appendChild(grp);
+  sel.onchange = onStationChange;
+}
+
+// Rain metrics have no NWS equivalent, so they're only offered for the home
+// station. Rebuilding on every station switch keeps the current selection
+// when it's still valid, and falls back to outsideTemp when it isn't.
+function buildMetricOptions() {
+  const sel = document.getElementById("metric");
+  const prev = sel.value;
+  sel.innerHTML = "";
+  Object.entries(METRICS).forEach(([k, m]) => {
+    if (!isHomeStation() && !NWS_METRICS[k]) return;
+    const o = document.createElement("option");
+    o.value = k; o.textContent = `${m.label} (${m.unit})`;
+    sel.appendChild(o);
+  });
+  sel.value = [...sel.options].some(o => o.value === prev) ? prev : sel.options[0].value;
+}
+
+function onStationChange() {
+  state.station = document.getElementById("station").value || null;
+  buildMetricOptions();
+  updatePresetAvailability();
+  applyPreset(7);
+}
+
 async function main() {
   initTheme();
   initViewToggle();
@@ -1373,17 +1563,14 @@ async function main() {
     document.getElementById("subtitle").innerHTML =
       `Live conditions &amp; history since ${nice(s)}`;
 
-    const sel = document.getElementById("metric");
-    Object.entries(METRICS).forEach(([k, m]) => {
-      const o = document.createElement("option");
-      o.value = k; o.textContent = `${m.label} (${m.unit})`;
-      sel.appendChild(o);
-    });
-    sel.onchange = loadSeries;
+    populateStationPicker();
+    buildMetricOptions();
+    document.getElementById("metric").onchange = loadSeries;
     document.getElementById("start").onchange = clearPresetsOnManual;
     document.getElementById("end").onchange = clearPresetsOnManual;
     document.getElementById("csvBtn").onclick = exportCsv;
     buildPresets();
+    updatePresetAvailability();
     renderNow();
     if (!applyHashState()) applyPreset(7);
     // restore last view *after* the chart exists, so switching back to history
