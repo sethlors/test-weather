@@ -1,46 +1,47 @@
 # Weather History Dashboard
 
-An interactive, **fully static** dashboard for browsing historical readings
-from a Davis weather station — hosted on GitHub Pages with **no backend**.
+An interactive dashboard for browsing historical and **live** readings from a
+Davis weather station — a static page (GitHub Pages, no backend of its own)
+that reads from a [Supabase](https://supabase.com) Postgres database.
 
-The SQLite database is queried **directly in the browser** using
-[sql.js](https://github.com/sql-js/sql.js) (SQLite compiled to WebAssembly).
-The page fetches `weather.db` once, loads it into memory, and runs SQL against
-it as you pan/zoom — so any static file host (GitHub Pages included) can serve
-the whole thing.
+The browser queries Supabase directly over its REST API (aggregation happens
+server-side in Postgres RPC functions — see `supabase/schema.sql`) and
+subscribes to realtime `INSERT`s on the `readings` table, so a new reading
+appears in the UI within moments of the station posting it — no polling, no
+scheduled sync.
 
 ## Where the data comes from
 
 The weather station's Windows software (Davis WeatherLink) renders its readings
-into `Detail-All.htm` from a template (`Detail-All.htx`) every ~5 minutes, and a
-`.bat` script commits that file to git. That means **git history already holds a
-5-minute-resolution time series** going back months — the numbers are sitting in
-the HTML as plain text (not just in the gauge images).
-
-`scripts/build_weather_db.py` walks that git history, extracts every reading by
-matching the template's placeholders, and writes a full (~80-column) SQLite db.
-`scripts/make_lean_db.py` then slims it to just the charted metrics for the web.
+into `Detail-All.htm` from a template (`Detail-All.htx`) every ~5 minutes. In
+the `Davis_Weather` repo, `scripts/push_reading.py` parses that file the moment
+it's written and pushes the reading straight to Supabase — see
+`PushWeatherData2Github.bat`, which calls it before the (still-kept, for
+archival) git commit/push of the station's own files.
 
 ```
-Detail-All.htx (template)  ─┐
-                            ├─► build_weather_db.py ─► full weather.db ─► make_lean_db.py ─► weather.db (~4.5 MB, lives on the weather-data branch)
-git history of Detail-All.htm ┘
+Detail-All.htx (template) ─┐
+                           ├─► push_reading.py ─► Supabase `readings` table ─► index.html (REST + realtime)
+Detail-All.htm (station output) ─┘
 ```
+
+Historical data (collected by the previous git-polling pipeline) was backfilled
+once with `scripts/backfill_supabase.py`. `scripts/build_weather_db.py` /
+`make_lean_db.py` / `sync_from_remote.py` are that retired pipeline, kept only
+because `backfill_supabase.py` reads the lean db shape they produced.
 
 ## Files
 
 | Path | What it is |
 |------|-----------|
-| `index.html` | The dashboard (loads sql.js + uPlot, queries `weather.db`) |
-| `weather.db` | Lean SQLite db (`ts` + 12 metrics, ~56k rows) — **not tracked on `main`**; it's maintained on the `weather-data` branch and baked into the Pages artifact at deploy |
-| `static/` | Vendored `sql.js` (wasm), `uPlot`, `Leaflet` + `protomaps-leaflet` — all self-hosted |
+| `index.html` | The dashboard (loads `supabase-js` + uPlot, queries Supabase) |
+| `static/` | Vendored `supabase-js`, `uPlot`, `Leaflet` + `protomaps-leaflet` — all self-hosted |
 | `static/basemap/station.pmtiles` | Vector basemap for the locator map (~3.5 MB), cut from the Protomaps planet build |
-| `scripts/build_weather_db.py` | Full extractor from `Detail-All.htm` git history (one-time build) |
-| `scripts/make_lean_db.py` | Full db → lean web db |
-| `scripts/sync_from_remote.py` | Pulls new readings from the live repo and appends them |
-| `scripts/weather_ts.py` | The one canonical wall-clock→epoch rule, shared by the builders and the sync |
+| `supabase/schema.sql` | `readings` table, RLS policies, and the RPC functions the dashboard calls (bounds/latest/raw/bucketed series) |
+| `scripts/backfill_supabase.py` | One-time copy of a lean `weather.db`'s rows into Supabase |
+| `scripts/build_weather_db.py`, `make_lean_db.py`, `sync_from_remote.py`, `weather_ts.py` | The retired git-polling pipeline; kept for reference and because `backfill_supabase.py` depends on the lean db shape they defined |
 | `scripts/fetch_basemap.sh` | Regenerates the basemap tileset (only needed if the station moves) |
-| `.github/workflows/sync.yml` | Scheduled Action that syncs new readings and deploys the site |
+| `.github/workflows/sync.yml` | Deploys the static site to Pages on push to `main` (no data sync — that's live now) |
 
 ## Metrics included
 
@@ -58,13 +59,11 @@ images, with no text value to extract.)
 
 ### Adding a column
 
-The published db is restored from the `weather-data` branch and appended to in
-place — it is never rebuilt from the full db — so a new column reaches
-production only through `ensure_schema()` in `sync_from_remote.py`, which
-`ALTER`s it in on the next run. Add it in **both** `make_lean_db.py` and
-`sync_from_remote.py` or a rebuilt db and a synced db will diverge. Rows written
-before the column existed keep `NULL`; backfilling would mean refetching every
-historical commit from the API.
+Add the column to the Postgres `readings` table (`ALTER TABLE ... ADD COLUMN`,
+mirrored in `supabase/schema.sql` for anyone re-provisioning), then add it in
+**both** `Davis_Weather/scripts/push_reading.py` (so new readings populate it)
+and any RPC function in `supabase/schema.sql` that needs to expose it. Rows
+written before the column existed keep `NULL`.
 
 ## Two views
 
@@ -74,10 +73,10 @@ The header toggles between them, and the choice is remembered in
 - **History** — the metric picker, range presets, chart, stats and locator map.
 - **Dashboard** — a glanceable, tablet-sized read of the newest sample only:
   wind compass, hero temperature, barometer + trend, wind chill / humidity /
-  heat index, and the four rainfall totals. Because it's meant to be left
-  running on a wall-mounted tablet, it refetches the db every 15 minutes (the
-  sync cadence) while it's the active view and the page isn't backgrounded.
-  Every tile is a link into that metric's history.
+  heat index, and the four rainfall totals. New readings arrive live via the
+  Supabase realtime subscription while it's the active view; a 5-minute poll
+  (`DASH_REFRESH_MS`) is a fallback only, in case the websocket drops
+  silently. Every tile is a link into that metric's history.
 
 ## Timestamps
 
@@ -114,12 +113,11 @@ times shift by well under a second.
 
 ### Why the basemap is a local file
 
-A normal map fetches tiles from a third-party server on every page load, which
-would undo the property this project otherwise maintains: the published page
-makes **no third-party requests**. So instead a small region is cut out of the
+A normal map fetches tiles from a third-party server on every page load. This
+project avoids that for the map specifically (the weather data itself is now a
+third-party request, to Supabase) by cutting a small region out of the
 [Protomaps](https://protomaps.com) planet build once (`scripts/fetch_basemap.sh`)
-and committed as a single `.pmtiles` archive, read via HTTP range requests —
-the same "one file on static storage" shape as `weather.db`.
+and committing it as a single `.pmtiles` archive, read via HTTP range requests.
 
 This is also why the tiles aren't scraped from OpenStreetMap's standard tile
 server: [its usage policy](https://operations.osmfoundation.org/policies/tiles/)
@@ -140,81 +138,49 @@ browser fetches only the handful of tiles on screen (~200 KB), not the whole
 
 ## Running locally
 
-The db isn't tracked on `main`, so grab the current one from the `weather-data`
-branch first:
+Fill in `SUPABASE_URL` / `SUPABASE_ANON_KEY` near the top of `index.html`
+(see "Supabase setup" below), then:
 
 ```bash
-git fetch origin weather-data
-git show origin/weather-data:weather.db > weather.db   # gitignored; local dev only
-
 npx http-server . -p 8123 -c-1
 # open http://localhost:8123
 ```
 
-> Use a server that supports **HTTP range requests**. `weather.db` is loaded up
-> front and doesn't need them, but the `.pmtiles` basemap is read a few byte
-> ranges at a time — and Python's `http.server` answers `Range:` with the whole
-> file, so the map silently renders blank under `python3 -m http.server`.
-> GitHub Pages does serve ranges (`206 Partial Content`), so this only bites in
-> local dev.
+> Use a server that supports **HTTP range requests**. The `.pmtiles` basemap is
+> read a few byte ranges at a time, and Python's `http.server` answers `Range:`
+> with the whole file, so the map silently renders blank under
+> `python3 -m http.server`. GitHub Pages does serve ranges (`206 Partial
+> Content`), so this only bites in local dev.
 
 ## Deploying to GitHub Pages
 
-The site is built and published by the **GitHub Actions Pages pipeline** —
-there's no hosting branch to manage. Enable it once:
+The site is built and published by the **GitHub Actions Pages pipeline**.
+Enable it once:
 
 1. Repo **Settings → Pages**
 2. **Source: GitHub Actions**
 
 The site publishes at `https://<user>.github.io/test-weather/`.
-The `.nojekyll` file ensures `static/` and the `.wasm` are served as-is.
+`.github/workflows/sync.yml` just assembles `index.html` + `static/` and
+deploys on every push to `main` — there's no data sync step, since the
+dashboard reads Supabase live at page-load time.
 
-`main` holds only source (code + vendored assets) — **not** the database. The
-accumulating `weather.db` lives on a dedicated **`weather-data`** branch that is
-force-pushed as a single commit, so it never bloats `main`'s history and isn't a
-hosting branch either. The deploy job assembles the site (`index.html` +
-`static/` + the current `weather.db`) into a Pages artifact at publish time.
+## Supabase setup
 
-> First-time setup only: the `weather-data` branch must be seeded once with an
-> initial `weather.db` (build one with `build_weather_db.py` → `make_lean_db.py`,
-> or copy an existing lean db), e.g.
-> `git switch --orphan weather-data && git add weather.db && git commit && git push -u origin weather-data`.
-> Every run after that maintains it automatically.
-
-## Keeping it updated automatically
-
-`weather.db` is a static file, so something has to refresh it when new readings
-arrive. This repo does that entirely on its own — no access to the weather
-machine or the source repo's settings required.
-
-`.github/workflows/sync.yml` runs on a ~15-minute schedule (and on every push to
-`main`, and on demand via **Run workflow**). Each run:
-
-1. restores the accumulated db from the `weather-data` branch,
-2. reads the newest timestamp in it,
-3. asks the GitHub API for commits of `Detail-All.htm` in the live repo
-   (`tvLors/Davis_Weather`) newer than that,
-4. fetches each of those commits' raw `Detail-All.htm`, parses the metrics, and
-   appends the rows (`INSERT OR IGNORE`),
-5. **only if the data actually changed** (or it's a manual/code push):
-   force-pushes the updated db back to `weather-data` and deploys a fresh site
-   artifact to Pages.
-
-Because it captures **every commit** since the last run — not just whatever the
-"current" reading happens to be — no 5-minute sample is lost even when GitHub's
-scheduler delays, coalesces, or skips runs. **Cadence only affects freshness of
-the latest point, never completeness of the history.** The change-gated deploy
-means idle scheduled runs are true no-ops, keeping us well under Pages
-deployment rate limits. The sync step writes a freshness summary (newest reading
-+ gap closed) to the run's **Summary** tab for at-a-glance observability.
-
-### A note on scheduler reliability
-
-GitHub's `schedule:` cron is **best-effort**: runs are commonly delayed under
-load and are silently disabled after ~60 days of repo inactivity. The backfill
-design makes this a *freshness*, never a *completeness*, problem — a late run
-still ingests everything it missed. Any push or a manual **Run workflow** also
-re-arms a disabled schedule. If you ever need hard freshness guarantees, point
-an external scheduler (cron-job.org, UptimeRobot, a Cloudflare Worker cron, …)
-at the workflow's `workflow_dispatch` API endpoint; the workflow is already
-idempotent and safe to trigger as often as you like.
+1. Create a project at [supabase.com](https://supabase.com) (free tier).
+2. Run `supabase/schema.sql` in the SQL editor — creates the `readings`
+   table, RLS policies, and the RPC functions the dashboard calls.
+3. Project Settings → API: copy the **Project URL** and **`anon` public key**
+   into `SUPABASE_URL` / `SUPABASE_ANON_KEY` in `index.html`. Safe to publish —
+   RLS restricts that key to `SELECT`.
+4. Copy the **`service_role` key** (secret — never commit it) and set it, plus
+   the project URL, as **Windows environment variables on the station PC**
+   (`setx SUPABASE_URL "..."` / `setx SUPABASE_SERVICE_KEY "..."`). That's what
+   `Davis_Weather/scripts/push_reading.py` writes with.
+5. One-time backfill of existing history — grab the lean db the old pipeline
+   built (it lives on the `weather-data` branch) and push it in:
+   ```bash
+   git fetch origin weather-data
+   git show origin/weather-data:weather.db > weather.db   # gitignored; local only
+   SUPABASE_URL=... SUPABASE_SERVICE_KEY=... python3 scripts/backfill_supabase.py --db weather.db
+   ```

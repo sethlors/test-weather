@@ -1,0 +1,41 @@
+name: Interim Supabase sync (stopgap)
+
+# TEMPORARY. Delete this workflow and scripts/sync_to_supabase.py once the
+# station is wired to push_reading.py directly (see
+# Davis_Weather/scripts/push_reading.py) -- at that point the station pushes
+# each reading to Supabase itself within seconds and this polling job is
+# redundant.
+#
+# Until then: the station's own Task Scheduler job keeps committing
+# Detail-All.htm to the Davis_Weather repo on its own, independent of this
+# repo or the dashboard. This workflow just keeps Supabase caught up from
+# that git history, the same way the old (retired) sync.yml did for the
+# local weather.db.
+
+on:
+  schedule:
+    - cron: "7,22,37,52 * * * *"   # every ~15 min, off the high-contention marks
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: pip install certifi
+        run: pip install certifi
+
+      - name: Sync new readings to Supabase
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: python3 scripts/sync_to_supabase.py | tee -a "$GITHUB_STEP_SUMMARY"

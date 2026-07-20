@@ -374,7 +374,7 @@
     <div class="chart-head">
       <div class="chart-title" id="chartTitle"><span class="swatch"></span>&nbsp;</div>
       <div class="chart-tools">
-        <div class="res-hint" id="resHint"><span class="status" id="status">Connecting to weather.db&hellip;</span></div>
+        <div class="res-hint" id="resHint"><span class="status" id="status">Connecting&hellip;</span></div>
         <button class="btn" id="csvBtn" title="Download the charted series as CSV" hidden>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12M7 10l5 5 5-5M4 21h16"/></svg>
           CSV
@@ -418,10 +418,18 @@
 </div>
 
 <script src="static/uPlot.iife.min.js"></script>
-<script src="static/sql-wasm.js"></script>
+<script src="static/supabase.js"></script>
 <script src="static/leaflet.js"></script>
 <script src="static/protomaps-leaflet.js"></script>
 <script>
+// ---- Supabase project config ----
+// The anon key is safe to ship in this public static page: RLS on the
+// `readings` table (see supabase/schema.sql) grants it SELECT only, no
+// write access. Fill these in after creating the Supabase project.
+const SUPABASE_URL = "https://xwzbuipunpcaulpzepfr.supabase.co";
+const SUPABASE_ANON_KEY = "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inh3emJ1aXB1bnBjYXVscHplcGZyIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODQ1ODcxMTYsImV4cCI6MjEwMDE2MzExNn0.eqriegNMxvw3n7ITVB70w1m0hhJqtIl4g_xQmhgj5_s";
+const sb = supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
 // ---- metric catalog (matches columns in weather.db) ----
 // accent: [light, dark] series color chosen by metric family (single series shown
 // at a time, so no CVD-adjacency concern — each just needs to read against the surface).
@@ -441,7 +449,7 @@ const METRICS = {
   totalRain:        { label: "Year Rain Total",     unit: "in",    accent: ["#2a78d6", "#3987e5"] },
 };
 
-const state = { db: null, dbStart: null, dbEnd: null, lastData: null, lastMeta: null };
+const state = { db: null, dbStart: null, dbEnd: null, lastData: null, lastMeta: null, latest: null };
 let chart = null;
 
 // icons for the current-conditions strip
@@ -573,24 +581,19 @@ function nightSpans(t0, t1) {
   return spans.filter(([a, b]) => b > t0 && a < t1);
 }
 
-async function initDb() {
-  const SQL = await window.initSqlJs({ locateFile: () => "static/sql-wasm.wasm" });
-  // bust both the browser cache and the Pages CDN cache (max-age=600) so a
-  // fresh sync is visible promptly; the URL changes every 5 minutes
-  const bucket = Math.floor(Date.now() / 300000);
-  const buf = await fetch("weather.db?v=" + bucket, { cache: "no-cache" }).then(r => {
-    if (!r.ok) throw new Error("could not fetch weather.db: HTTP " + r.status);
-    return r.arrayBuffer();
-  });
-  return new SQL.Database(new Uint8Array(buf));
+// Bounds and aggregation now live server-side (Postgres RPC functions in
+// supabase/schema.sql) rather than as client-built SQL over a fetched db
+// file -- the browser only ever asks for the rows/buckets it needs.
+async function fetchBounds() {
+  const { data, error } = await sb.rpc("readings_bounds");
+  if (error) throw error;
+  return data[0];
 }
 
-// Run a query and return an array of plain row objects.
-function q(sql) {
-  const res = state.db.exec(sql);
-  if (!res.length) return [];
-  const { columns, values } = res[0];
-  return values.map(row => Object.fromEntries(columns.map((c, i) => [c, row[i]])));
+async function fetchLatest() {
+  const { data, error } = await sb.rpc("readings_latest");
+  if (error) throw error;
+  return data.length ? data[0] : null;
 }
 
 // Timestamps in the db are wall-clock instants stored as UTC, so all
@@ -609,25 +612,21 @@ function pickResolution(startSec, endSec) {
 }
 
 async function getSeries(metric, startSec, endSec, resolution) {
-  const col = '"' + metric + '"';
-  const where = `ts BETWEEN ${startSec} AND ${endSec} AND ${col} IS NOT NULL`;
   if (METRICS[metric].dailyTotal) {
     // cumulative counter that resets daily: the day's total is the max, one bar per day
-    const rows = await q(
-      `SELECT (ts/86400)*86400 AS b, MAX(${col}) AS mx FROM readings WHERE ${where} GROUP BY b ORDER BY b`
-    );
-    return { t: rows.map(r => r.b), avg: rows.map(r => r.mx), min: null, max: null, bars: true };
+    const { data, error } = await sb.rpc("readings_daily_total", { metric, start_ts: startSec, end_ts: endSec });
+    if (error) throw error;
+    return { t: data.map(r => r.t), avg: data.map(r => r.mx), min: null, max: null, bars: true };
   }
   if (resolution === "raw") {
-    const rows = await q(`SELECT ts AS t, ${col} AS v FROM readings WHERE ${where} ORDER BY ts`);
-    return { t: rows.map(r => r.t), avg: rows.map(r => r.v), min: null, max: null };
+    const { data, error } = await sb.rpc("readings_raw", { metric, start_ts: startSec, end_ts: endSec });
+    if (error) throw error;
+    return { t: data.map(r => r.t), avg: data.map(r => r.v), min: null, max: null };
   }
   const span = resolution === "hourly" ? 3600 : 86400;
-  const rows = await q(
-    `SELECT (ts/${span})*${span} AS b, AVG(${col}) AS a, MIN(${col}) AS mn, MAX(${col}) AS mx ` +
-    `FROM readings WHERE ${where} GROUP BY b ORDER BY b`
-  );
-  return { t: rows.map(r => r.b), avg: rows.map(r => r.a), min: rows.map(r => r.mn), max: rows.map(r => r.mx) };
+  const { data, error } = await sb.rpc("readings_bucketed", { metric, start_ts: startSec, end_ts: endSec, span_sec: span });
+  if (error) throw error;
+  return { t: data.map(r => r.t), avg: data.map(r => r.avg), min: data.map(r => r.mn), max: data.map(r => r.mx) };
 }
 
 /* ---------- tooltip plugin ---------- */
@@ -882,9 +881,11 @@ function renderStats(data, unit, accent, res, dailyTotal) {
 }
 
 /* ---------- current conditions strip ---------- */
+// Kept up to date by main()'s initial fetch and the realtime subscription
+// below -- reading it is synchronous so every existing call site (renderNow,
+// renderDashboard) needs no await.
 function latestReading() {
-  const rows = q("SELECT * FROM readings ORDER BY ts DESC LIMIT 1");
-  return rows.length ? rows[0] : null;
+  return state.latest;
 }
 
 function renderNow() {
@@ -1073,11 +1074,12 @@ function setView(v) {
   }
 }
 
-// The history view is loaded once and driven by hand; the dashboard is meant to
-// be left running for days, so it has to pull new readings itself. The sync
-// publishes about every 15 minutes, so anything faster just refetches the same
-// bytes.
-const DASH_REFRESH_MS = 15 * 60 * 1000;
+// The history view is loaded once and driven by hand; the dashboard is meant
+// to be left running for days. New readings arrive over the realtime
+// subscription (see subscribeLive() below) within moments of the station
+// posting them, so this timer is just a reconciliation fallback in case a
+// websocket drops without the browser noticing.
+const DASH_REFRESH_MS = 5 * 60 * 1000;
 let dashTimer = null;
 function startDashRefresh() {
   stopDashRefresh();
@@ -1089,15 +1091,26 @@ function stopDashRefresh() {
 async function refreshDashboardData() {
   if (document.hidden) return;   // don't refetch behind a locked or backgrounded screen
   try {
-    const db = await initDb();
-    if (state.db && state.db.close) state.db.close();   // free the previous copy
-    state.db = db;
-    const [{ lo, hi }] = q("SELECT MIN(ts) AS lo, MAX(ts) AS hi FROM readings");
+    const [{ lo, hi }, latest] = await Promise.all([fetchBounds(), fetchLatest()]);
     state.dbStart = lo; state.dbEnd = hi;
+    if (latest) state.latest = latest;
     renderDashboard();
   } catch (err) {
     console.error("dashboard refresh failed", err);
   }
+}
+
+// Primary live-update path: Postgres broadcasts each INSERT on `readings`
+// (see "alter publication supabase_realtime add table readings" in
+// supabase/schema.sql) and this pushes it straight into the UI -- no polling.
+function subscribeLive() {
+  sb.channel("readings-live")
+    .on("postgres_changes", { event: "INSERT", schema: "public", table: "readings" }, payload => {
+      state.latest = payload.new;
+      state.dbEnd = payload.new.ts;
+      if (currentView() === "dashboard") renderDashboard();
+    })
+    .subscribe();
 }
 
 function initViewToggle() {
@@ -1212,8 +1225,8 @@ function clearPresetsOnManual() {
 /* ---------- locator map ---------- */
 // Vector tiles are cut from the Protomaps planet build into a single local
 // .pmtiles file (see scripts/fetch_basemap.sh) and read with range requests, so
-// the published page still makes zero third-party requests — same posture as
-// sql.js, uPlot and weather.db. Vector also means light/dark is a genuine
+// the map itself makes no third-party requests (unlike the weather data,
+// which now lives in Supabase). Vector also means light/dark is a genuine
 // restyle rather than a CSS filter over baked-in raster colors.
 let map = null, mapLayer = null;
 
@@ -1350,13 +1363,15 @@ async function main() {
   initMap();
   renderLocation();
   try {
-    state.db = await initDb();
-    const [{ lo, hi }] = await q("SELECT MIN(ts) AS lo, MAX(ts) AS hi FROM readings");
+    const [{ lo, hi }, latest] = await Promise.all([fetchBounds(), fetchLatest()]);
     state.dbStart = lo; state.dbEnd = hi;
+    state.latest = latest;
+    state.db = true;   // ready flag; data now lives in Supabase, not a fetched file
+    subscribeLive();
     const s = new Date(lo * 1000), e = new Date(hi * 1000);
     const nice = d => d.toLocaleDateString("en-US", { timeZone: "UTC", year: "numeric", month: "short", day: "numeric" });
     document.getElementById("subtitle").innerHTML =
-      `Live conditions &amp; history since ${nice(s)} &middot; updates every 15 minutes`;
+      `Live conditions &amp; history since ${nice(s)}`;
 
     const sel = document.getElementById("metric");
     Object.entries(METRICS).forEach(([k, m]) => {
