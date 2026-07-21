@@ -90,6 +90,11 @@
   .theme-toggle:hover { background: var(--surface-2); color: var(--ink); }
   .theme-toggle svg { width: 18px; height: 18px; }
 
+  /* first-encounter label for the view toggle -- explains the icon in text
+     rather than relying on hover-only title discovery; dismissed for good
+     after the first click (see initViewHint) */
+  .view-hint { font-size: 12.5px; color: var(--muted); white-space: nowrap; align-self: center; }
+
   /* ---- card ---- */
   .card {
     background: var(--surface); border: 1px solid var(--border);
@@ -201,7 +206,15 @@
   .chart-tools { display: flex; align-items: center; gap: 12px; }
 
   /* ---- station location ---- */
-  .location { margin-top: 16px; overflow: hidden; display: grid; grid-template-columns: 1fr 260px; }
+  /* Collapsed (map hidden) by default so the card reads as secondary to the
+     chart above it, rather than an equal-weight peer -- .loc-meta (station,
+     timezone, sun times) stays visible either way since sun times are the
+     legend for the chart's night-shading, not just map trivia. */
+  .location { margin-top: 16px; overflow: hidden; display: grid; grid-template-columns: 1fr; border-color: var(--border-2); box-shadow: none; }
+  .location.expanded { grid-template-columns: 1fr 260px; }
+  .loc-bar { grid-column: 1 / -1; display: flex; align-items: center; justify-content: space-between; padding: 12px 16px; border-bottom: 1px solid var(--border-2); }
+  .loc-bar-label { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  #map[hidden] { display: none; }
   #map { min-height: 300px; background: var(--surface-2); }
   /* Leaflet hardcodes its own font/colors; pull it back onto the page's tokens */
   #map.leaflet-container { font: inherit; background: var(--surface-2); }
@@ -249,7 +262,8 @@
   .other-station-label.selected { color: var(--accent2); }
   .station-pin.clickable { cursor: pointer; }
 
-  .loc-meta { padding: 16px 18px; border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 13px; }
+  .loc-meta { padding: 16px 18px; display: flex; flex-direction: column; gap: 13px; }
+  .location.expanded .loc-meta { border-left: 1px solid var(--border); }
   .loc-meta .m-row .m-label { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
   .loc-meta .m-row .m-val { font-size: 14px; font-weight: 600; font-variant-numeric: tabular-nums; margin-top: 2px; }
   .loc-meta .m-row .m-sub { font-size: 11.5px; color: var(--muted); margin-top: 1px; }
@@ -326,14 +340,15 @@
     .dash-row { grid-template-columns: repeat(2, 1fr); }
     .d-wind { flex-direction: column; gap: 10px; padding: 15px 16px 18px; }
     .d-wind .d-cap { position: static; align-self: flex-start; }
+    .view-hint { display: none; }
   }
 
   @media (max-width: 720px) {
     .kpis { grid-template-columns: 1fr 1fr; }
     select { min-width: 0; }
     .controls { gap: 12px; }
-    .location { grid-template-columns: 1fr; }
-    .loc-meta { border-left: 0; border-top: 1px solid var(--border); }
+    .location.expanded { grid-template-columns: 1fr; }
+    .location.expanded .loc-meta { border-left: 0; border-top: 1px solid var(--border); }
   }
 </style>
 </head>
@@ -354,6 +369,7 @@
       </div>
     </div>
     <div class="spacer"></div>
+    <span class="view-hint" id="viewHint">Dashboard view, for wall displays &rarr;</span>
     <button class="theme-toggle" id="viewToggle" title="Dashboard view" aria-label="Switch to dashboard view" aria-pressed="false"></button>
     <button class="theme-toggle" id="themeToggle" title="Toggle theme" aria-label="Toggle color theme"></button>
   </header>
@@ -423,8 +439,12 @@
     <div id="chart" class="loading"></div>
   </div>
 
-  <div class="card location">
-    <div id="map"></div>
+  <div class="card location" id="locationCard">
+    <div class="loc-bar">
+      <div class="loc-bar-label">Location</div>
+      <button class="btn" id="mapToggle" aria-expanded="false" aria-controls="map">Show map</button>
+    </div>
+    <div id="map" hidden></div>
     <div class="loc-meta">
       <div class="m-row">
         <div class="m-label">Station</div>
@@ -1290,6 +1310,23 @@ function initViewToggle() {
   document.body.setAttribute("data-view", "history");
   btn.innerHTML = GRID_ICON;
   btn.onclick = () => setView(currentView() === "dashboard" ? "history" : "dashboard");
+  initViewHint();
+}
+
+// Explains the toggle in text once, at first encounter, rather than leaving
+// discovery to a hover-only title attribute. Dismissed for good on first
+// click of the toggle -- by then the user has found it and doesn't need it
+// re-explained on every visit.
+const VIEW_HINT_KEY = "wx-view-hint-dismissed";
+function initViewHint() {
+  const hint = document.getElementById("viewHint");
+  let dismissed = false;
+  try { dismissed = !!localStorage.getItem(VIEW_HINT_KEY); } catch (e) {}
+  if (dismissed) { hint.hidden = true; return; }
+  document.getElementById("viewToggle").addEventListener("click", () => {
+    hint.hidden = true;
+    try { localStorage.setItem(VIEW_HINT_KEY, "1"); } catch (e) {}
+  }, { once: true });
 }
 
 /* ---------- CSV export of the charted series ---------- */
@@ -1481,10 +1518,7 @@ function initMap() {
     stationMarkers[st.id] = { pin, label };
   });
   highlightStationOnMap(null);
-
-  // frame the home station + every picker option together, once, at load
-  const pts = [[STATION.lat, STATION.lon], ...IA_STATIONS.map(s => [s.lat, s.lon])];
-  map.fitBounds(L.latLngBounds(pts), { padding: [24, 24] });
+  fitMapToStations();
 
   // ODbL requires visible attribution for this Produced Work of OSM data
   map.attributionControl.setPrefix("").addAttribution(
@@ -1507,6 +1541,39 @@ function highlightStationOnMap(stationId) {
     m.pin.getElement()?.classList.toggle("selected", on);
     m.label?.getElement()?.classList.toggle("selected", on);
   });
+}
+
+// frame the home station + every picker option together; called at init and
+// again on first expand, since the map was sized 0x0 (hidden) at init time
+function fitMapToStations() {
+  const pts = [[STATION.lat, STATION.lon], ...IA_STATIONS.map(s => [s.lat, s.lon])];
+  map.fitBounds(L.latLngBounds(pts), { padding: [24, 24] });
+}
+
+// The map card is collapsed by default (see .location CSS) so it doesn't
+// read as chart-tier; .loc-meta (station/tz/sun) stays visible either way.
+// #map is initialized hidden, so Leaflet sizes it at 0x0 -- invalidateSize()
+// plus a re-fit on first reveal corrects that.
+const MAP_EXPANDED_KEY = "wx-map-expanded";
+function setMapExpanded(expanded) {
+  const card = document.getElementById("locationCard");
+  const btn = document.getElementById("mapToggle");
+  card.classList.toggle("expanded", expanded);
+  document.getElementById("map").hidden = !expanded;
+  btn.setAttribute("aria-expanded", String(expanded));
+  btn.textContent = expanded ? "Hide map" : "Show map";
+  try { localStorage.setItem(MAP_EXPANDED_KEY, expanded ? "1" : "0"); } catch (e) {}
+  if (expanded && map) {
+    map.invalidateSize();
+    fitMapToStations();
+  }
+}
+function initMapToggle() {
+  let expanded = false;
+  try { expanded = localStorage.getItem(MAP_EXPANDED_KEY) === "1"; } catch (e) {}
+  document.getElementById("mapToggle").onclick = () =>
+    setMapExpanded(!document.getElementById("locationCard").classList.contains("expanded"));
+  setMapExpanded(expanded);
 }
 
 // Landuse kinds worth tinting green; everything else in that layer is left as
@@ -1662,6 +1729,7 @@ async function main() {
   initViewToggle();
   // independent of the database, so a failed db load still leaves a working map
   initMap();
+  initMapToggle();
   renderLocation();
   try {
     const [{ lo, hi }, latest] = await Promise.all([fetchBounds(), fetchLatest()]);
