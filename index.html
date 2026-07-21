@@ -113,6 +113,16 @@
   .datespan { display: flex; align-items: flex-end; gap: 8px; }
   .datespan .dash { color: var(--muted); padding-bottom: 9px; }
 
+  /* custom range is a manual override of the presets, not a peer control --
+     keep it quiet until the user actually reaches for it */
+  .field.quiet { margin-left: auto; }
+  .field.quiet > .flabel { opacity: .65; }
+  .field.quiet input[type=date] {
+    background: transparent; border-color: var(--border-2); color: var(--ink-2); font-size: 12.5px;
+  }
+  .field.quiet:focus-within > .flabel { opacity: 1; }
+  .field.quiet:focus-within input[type=date] { background: var(--surface-2); color: var(--ink); }
+
   /* segmented preset control */
   .segmented { display: inline-flex; background: var(--surface-2); border: 1px solid var(--border); border-radius: 10px; padding: 3px; gap: 2px; }
   .segmented button {
@@ -387,7 +397,7 @@
       <span class="flabel">Range</span>
       <div class="segmented" id="presets"></div>
     </div>
-    <div class="field">
+    <div class="field quiet">
       <span class="flabel">Custom range</span>
       <div class="datespan">
         <input type="date" id="start" aria-label="Start date">
@@ -477,6 +487,13 @@ const METRICS = {
   monthlyRain:      { label: "Month Rain Total",    unit: "in",    accent: ["#2a78d6", "#3987e5"] },
   totalRain:        { label: "Year Rain Total",     unit: "in",    accent: ["#2a78d6", "#3987e5"] },
 };
+// Grouping for the metric <select>: keeps instantaneous conditions separate
+// from the four rain-accumulation windows, which otherwise read as a flat
+// list differing only by a word ("Day"/"Storm"/"Month"/"Year") buried mid-label.
+const METRIC_GROUPS = [
+  { label: "Conditions", keys: ["outsideTemp", "outsideDewPt", "windChill", "outsideHeatIndex", "outsideHumidity", "barometer", "windSpeed"] },
+  { label: "Rainfall",   keys: ["rainRate", "dailyRain", "stormRain", "monthlyRain", "totalRain"] },
+];
 
 const state = { db: null, dbStart: null, dbEnd: null, lastData: null, lastMeta: null, latest: null, station: null };
 let chart = null;
@@ -1615,11 +1632,19 @@ function buildMetricOptions() {
   const sel = document.getElementById("metric");
   const prev = sel.value;
   sel.innerHTML = "";
-  Object.entries(METRICS).forEach(([k, m]) => {
-    if (!isHomeStation() && !NWS_METRICS[k]) return;
-    const o = document.createElement("option");
-    o.value = k; o.textContent = `${m.label} (${m.unit})`;
-    sel.appendChild(o);
+  const home = isHomeStation();
+  METRIC_GROUPS.forEach(({ label, keys }) => {
+    const available = keys.filter(k => home || NWS_METRICS[k]);
+    if (!available.length) return; // e.g. "Rainfall" on a non-home station
+    const grp = document.createElement("optgroup");
+    grp.label = label;
+    available.forEach(k => {
+      const m = METRICS[k];
+      const o = document.createElement("option");
+      o.value = k; o.textContent = `${m.label} (${m.unit})`;
+      grp.appendChild(o);
+    });
+    sel.appendChild(grp);
   });
   sel.value = [...sel.options].some(o => o.value === prev) ? prev : sel.options[0].value;
 }
