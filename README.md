@@ -36,8 +36,8 @@ because `backfill_supabase.py` reads the lean db shape they produced.
 |------|-----------|
 | `index.html` | The dashboard (loads `supabase-js` + uPlot, queries Supabase) |
 | `static/` | Vendored `supabase-js`, `uPlot`, `Leaflet` + `protomaps-leaflet` — all self-hosted |
-| `static/basemap/station.pmtiles` | Street-level vector basemap around the home station (~3.5 MB), cut from the Protomaps planet build |
-| `static/basemap/iowa.pmtiles` | State-wide, lower-detail basemap (~11 MB) used when the station picker selects somewhere outside `station.pmtiles`' bounds |
+| `static/basemap/iowa.pmtiles` | State-wide vector basemap (~11 MB) the locator map/station picker uses, cut from the Protomaps planet build |
+| `static/basemap/station.pmtiles` | Unused -- an earlier, tighter street-level basemap around just the home station (~3.5 MB); kept in case a closer-in view is worth reintroducing |
 | `supabase/schema.sql` | `readings` table, RLS policies, and the RPC functions the dashboard calls (bounds/latest/raw/bucketed series) |
 | `scripts/backfill_supabase.py` | One-time copy of a lean `weather.db`'s rows into Supabase |
 | `scripts/build_weather_db.py`, `make_lean_db.py`, `sync_from_remote.py`, `weather_ts.py` | The retired git-polling pipeline; kept for reference and because `backfill_supabase.py` depends on the lean db shape they defined |
@@ -74,12 +74,17 @@ involved). Two real limits, both surfaced in the UI when picking one:
   comparable shape, so the four rain metrics are only offered for the home
   station.
 
-Picking a station also updates the locator map: most of `IA_STATIONS` fall
-outside `station.pmtiles`' tight bounding box (it's cut close around the home
-station on purpose, for street-level detail), so `setMapStation()` swaps to
-the wider `iowa.pmtiles` basemap, widens the pannable bounds/zoom range, and
-drops a second (static, non-pulsing) pin for the picked station -- reverting
-to the tight home view when you switch back to "Davis Weather".
+The locator map doubles as the picker: every entry in `IA_STATIONS` plus
+"Davis Weather" gets a clickable pin on the state-wide `iowa.pmtiles`
+basemap, all visible together (fit into view once at load), and clicking one
+drives the same `onStationChange()` path as the dropdown -- the two can never
+disagree about which station is active. The active pin gets a highlighted
+ring; the rest are a plain accent color (`--accent2`), distinct from the home
+pin's pulsing `--accent`. (`static/basemap/station.pmtiles`, the tighter
+street-level basemap from before this, is unused now -- most of
+`IA_STATIONS` falls outside its bounding box, so it can't serve as a
+selector for the full list. Left in the repo in case a closer-in view is
+worth reintroducing later.)
 
 `api.weather.gov`'s `/observations` endpoint caps each response at 500
 entries and hands back a `pagination.next` cursor for the rest --
