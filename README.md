@@ -36,11 +36,13 @@ because `backfill_supabase.py` reads the lean db shape they produced.
 |------|-----------|
 | `index.html` | The dashboard (loads `supabase-js` + uPlot, queries Supabase) |
 | `static/` | Vendored `supabase-js`, `uPlot`, `Leaflet` + `protomaps-leaflet` — all self-hosted |
-| `static/basemap/station.pmtiles` | Vector basemap for the locator map (~3.5 MB), cut from the Protomaps planet build |
+| `static/basemap/station.pmtiles` | Street-level vector basemap around the home station (~3.5 MB), cut from the Protomaps planet build |
+| `static/basemap/iowa.pmtiles` | State-wide, lower-detail basemap (~11 MB) used when the station picker selects somewhere outside `station.pmtiles`' bounds |
 | `supabase/schema.sql` | `readings` table, RLS policies, and the RPC functions the dashboard calls (bounds/latest/raw/bucketed series) |
 | `scripts/backfill_supabase.py` | One-time copy of a lean `weather.db`'s rows into Supabase |
 | `scripts/build_weather_db.py`, `make_lean_db.py`, `sync_from_remote.py`, `weather_ts.py` | The retired git-polling pipeline; kept for reference and because `backfill_supabase.py` depends on the lean db shape they defined |
-| `scripts/fetch_basemap.sh` | Regenerates the basemap tileset (only needed if the station moves) |
+| `scripts/fetch_basemap.sh` | Regenerates `station.pmtiles` (only needed if the home station moves) |
+| `scripts/fetch_iowa_basemap.sh` | Regenerates `iowa.pmtiles` (only needed if `IA_STATIONS` in `index.html` grows past its bounding box) |
 | `.github/workflows/sync.yml` | Deploys the static site to Pages on push to `main` (no data sync — that's live now) |
 
 ## Metrics included
@@ -71,6 +73,19 @@ involved). Two real limits, both surfaced in the UI when picking one:
 - **No rain data** -- ASOS doesn't report cumulative rain totals in a
   comparable shape, so the four rain metrics are only offered for the home
   station.
+
+Picking a station also updates the locator map: most of `IA_STATIONS` fall
+outside `station.pmtiles`' tight bounding box (it's cut close around the home
+station on purpose, for street-level detail), so `setMapStation()` swaps to
+the wider `iowa.pmtiles` basemap, widens the pannable bounds/zoom range, and
+drops a second (static, non-pulsing) pin for the picked station -- reverting
+to the tight home view when you switch back to "Davis Weather".
+
+`api.weather.gov`'s `/observations` endpoint caps each response at 500
+entries and hands back a `pagination.next` cursor for the rest --
+`fetchNwsObservations()` follows it, since 500 only covers ~1.7 days at the
+~5-minute cadence these stations report at, well short of the 7-day window
+above.
 
 The home station's `readings.ts` is wall-clock time stored *as* UTC (see
 Timestamps below); NWS timestamps are genuine UTC. `realInstantToWallEpoch()`

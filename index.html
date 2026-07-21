@@ -215,6 +215,17 @@
     border-radius: 50%; background: var(--accent); opacity: .45; animation: ping 2.8s ease-out infinite;
   }
   @keyframes ping { 0% { transform: scale(1); opacity: .45; } 70% { transform: scale(3.6); opacity: 0; } 100% { opacity: 0; } }
+  /* other (non-live, NWS) station pin: static dot, no pulse, reads as "not the live one" */
+  .other-station-pin i {
+    position: absolute; top: 50%; left: 50%; width: 11px; height: 11px; margin: -5.5px 0 0 -5.5px;
+    border-radius: 50%; background: var(--ink-2); border: 2px solid var(--surface);
+    box-shadow: 0 1px 4px rgba(0,0,0,.4);
+  }
+  .other-station-label {
+    background: none; border: none; box-shadow: none; font: 600 11px/1 inherit; color: var(--ink-2);
+    text-shadow: 0 1px 2px var(--surface), 0 -1px 2px var(--surface), 1px 0 2px var(--surface), -1px 0 2px var(--surface);
+    white-space: nowrap;
+  }
 
   .loc-meta { padding: 16px 18px; border-left: 1px solid var(--border); display: flex; flex-direction: column; gap: 13px; }
   .loc-meta .m-row .m-label { font-size: 11px; font-weight: 600; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
@@ -507,7 +518,7 @@ const STATION = {
   lat: 41.59,
   lon: -93.83,
   tz: "America/Chicago",   // drives sun times; must be the station's real zone
-  label: "Des Moines metro, Iowa",
+  label: "Davis Weather",
 };
 
 /* ---------- other Iowa stations (NWS/ASOS) ---------- */
@@ -518,25 +529,25 @@ const STATION = {
 // involved. Unlike the home station, it only retains ~7 days of history and
 // has no rainfall totals (see NWS_METRICS below).
 const IA_STATIONS = [
-  { id: "KDSM", name: "Des Moines" },
-  { id: "KCID", name: "Cedar Rapids" },
-  { id: "KALO", name: "Waterloo" },
-  { id: "KDBQ", name: "Dubuque" },
-  { id: "KSUX", name: "Sioux City" },
-  { id: "KOTM", name: "Ottumwa" },
-  { id: "KMCW", name: "Mason City" },
-  { id: "KFOD", name: "Fort Dodge" },
-  { id: "KAMW", name: "Ames" },
-  { id: "KIOW", name: "Iowa City" },
-  { id: "KBRL", name: "Burlington" },
-  { id: "KDVN", name: "Davenport" },
-  { id: "KEST", name: "Estherville" },
-  { id: "KSPW", name: "Spencer" },
-  { id: "KMIW", name: "Marshalltown" },
-  { id: "KCWI", name: "Clinton" },
-  { id: "KPEA", name: "Pella" },
-  { id: "KFFL", name: "Fairfield" },
-  { id: "KLWD", name: "Lamoni" },
+  { id: "KDSM", name: "Des Moines",    lat: 41.53, lon: -93.65 },
+  { id: "KCID", name: "Cedar Rapids",  lat: 41.88, lon: -91.72 },
+  { id: "KALO", name: "Waterloo",      lat: 42.55, lon: -92.40 },
+  { id: "KDBQ", name: "Dubuque",       lat: 42.40, lon: -90.71 },
+  { id: "KSUX", name: "Sioux City",    lat: 42.40, lon: -96.38 },
+  { id: "KOTM", name: "Ottumwa",       lat: 41.10, lon: -92.44 },
+  { id: "KMCW", name: "Mason City",    lat: 43.15, lon: -93.33 },
+  { id: "KFOD", name: "Fort Dodge",    lat: 42.55, lon: -94.18 },
+  { id: "KAMW", name: "Ames",          lat: 41.99, lon: -93.62 },
+  { id: "KIOW", name: "Iowa City",     lat: 41.64, lon: -91.54 },
+  { id: "KBRL", name: "Burlington",    lat: 40.77, lon: -91.13 },
+  { id: "KDVN", name: "Davenport",     lat: 41.61, lon: -90.59 },
+  { id: "KEST", name: "Estherville",   lat: 43.40, lon: -94.75 },
+  { id: "KSPW", name: "Spencer",       lat: 43.17, lon: -95.21 },
+  { id: "KMIW", name: "Marshalltown",  lat: 42.11, lon: -92.92 },
+  { id: "KCWI", name: "Clinton",       lat: 41.83, lon: -90.33 },
+  { id: "KPEA", name: "Pella",         lat: 41.40, lon: -92.93 },
+  { id: "KFFL", name: "Fairfield",     lat: 41.05, lon: -91.98 },
+  { id: "KLWD", name: "Lamoni",        lat: 40.63, lon: -93.90 },
 ].sort((a, b) => a.name.localeCompare(b.name));
 
 // Metrics available from NWS observations, mapped to this dashboard's metric
@@ -1388,18 +1399,37 @@ function clearPresetsOnManual() {
 // the map itself makes no third-party requests (unlike the weather data,
 // which now lives in Supabase). Vector also means light/dark is a genuine
 // restyle rather than a CSS filter over baked-in raster colors.
-let map = null, mapLayer = null;
+let map = null, mapLayer = null, otherMarker = null, currentMapView = "home";
+
+// Two pre-cut basemaps (see scripts/fetch_basemap.sh and
+// fetch_iowa_basemap.sh): a tight, street-level one around the home station,
+// and a state-wide, lower-detail one for when the station picker (index.html
+// -> IA_STATIONS) selects somewhere outside the tight one's bounds -- which
+// is most of them, Iowa being much bigger than a 65x55mi box.
+const MAP_VIEWS = {
+  home: {
+    file: "static/basemap/station.pmtiles",
+    bounds: [[41.19, -94.43], [41.99, -93.23]],
+    minZoom: 10, maxZoom: 12,
+  },
+  iowa: {
+    file: "static/basemap/iowa.pmtiles",
+    bounds: [[40.3, -96.7], [43.7, -90.0]],
+    minZoom: 6, maxZoom: 10,
+  },
+};
 
 function initMap() {
   const el = document.getElementById("map");
+  const home = MAP_VIEWS.home;
   map = L.map(el, {
     center: [STATION.lat, STATION.lon],
     zoom: 11,
-    // clamped to what the local tileset actually contains: pan or zoom past
+    // clamped to what the active tileset actually contains: pan or zoom past
     // this and the map would show blank tiles rather than "more map"
-    minZoom: 10,
-    maxZoom: 12,
-    maxBounds: L.latLngBounds([41.19, -94.43], [41.99, -93.23]),
+    minZoom: home.minZoom,
+    maxZoom: home.maxZoom,
+    maxBounds: L.latLngBounds(home.bounds),
     maxBoundsViscosity: 1,
     scrollWheelZoom: false,   // the page scrolls; don't hijack the wheel
     attributionControl: true,
@@ -1414,6 +1444,46 @@ function initMap() {
   map.attributionControl.setPrefix("").addAttribution(
     '<a href="https://openstreetmap.org/copyright" target="_blank" rel="noopener">© OpenStreetMap</a>'
   );
+}
+
+// Called from onStationChange() so the map actually reflects the picker:
+// swaps to the wide basemap and drops a second pin when a station outside
+// the home basemap's bounds is selected, and reverts cleanly when switching
+// back to "Davis Weather".
+function setMapStation(stationId) {
+  if (!map) return;   // map failed to load; nothing to update
+  const st = stationId && IA_STATIONS.find(s => s.id === stationId);
+  const view = st ? "iowa" : "home";
+
+  if (otherMarker) { map.removeLayer(otherMarker); otherMarker = null; }
+
+  if (view !== currentMapView) {
+    currentMapView = view;
+    drawMapLayer();
+    const v = MAP_VIEWS[view];
+    map.setMinZoom(v.minZoom);
+    map.setMaxZoom(v.maxZoom);
+    map.setMaxBounds(L.latLngBounds(v.bounds));
+  }
+
+  if (st) {
+    // grouped so both pieces come off together next time otherMarker is cleared
+    otherMarker = L.layerGroup([
+      L.marker([st.lat, st.lon], {
+        icon: L.divIcon({ className: "other-station-pin", html: "<i></i>", iconSize: [11, 11] }),
+        keyboard: false, interactive: false,
+      }),
+      L.marker([st.lat, st.lon], {
+        icon: L.divIcon({ className: "other-station-label", html: st.name, iconSize: [0, 0], iconAnchor: [-9, 4] }),
+        keyboard: false, interactive: false,
+      }),
+    ]).addTo(map);
+    // fit both the home station and the picked one in view, so the map shows
+    // where it is relative to the live station rather than just an isolated dot
+    map.fitBounds(L.latLngBounds([STATION.lat, STATION.lon], [st.lat, st.lon]), { padding: [30, 30] });
+  } else {
+    map.setView([STATION.lat, STATION.lon], 11);
+  }
 }
 
 // Landuse kinds worth tinting green; everything else in that layer is left as
@@ -1456,7 +1526,7 @@ function drawMapLayer() {
   const road = kind => (z, f) => f.props.kind === kind;
 
   mapLayer = P.leafletLayer({
-    url: "static/basemap/station.pmtiles",
+    url: MAP_VIEWS[currentMapView].file,
     attribution: "",
     backgroundColor: p.land,
     paintRules: [
@@ -1552,6 +1622,7 @@ function onStationChange() {
   state.station = document.getElementById("station").value || null;
   buildMetricOptions();
   updatePresetAvailability();
+  setMapStation(state.station);
   applyPreset(7);
 }
 
