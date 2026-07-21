@@ -714,14 +714,23 @@ function wallEpochToRealInstant(epochSec) {
   return new Date(guess - drift * 1000);
 }
 
+// NWS caps each response at 500 observations and hands back a
+// `pagination.next` cursor for the rest -- at ~5-min cadence, 500 covers
+// only ~1.7 days, well short of NWS_HISTORY_DAYS. Follow the cursor until it
+// runs out (or a range this app never requests would be exceeded).
 async function fetchNwsObservations(stationId, startSec, endSec) {
   const start = wallEpochToRealInstant(startSec).toISOString();
   const end = wallEpochToRealInstant(endSec).toISOString();
-  const url = `https://api.weather.gov/stations/${stationId}/observations?start=${start}&end=${end}`;
-  const res = await fetch(url);
-  if (!res.ok) throw new Error("NWS request failed: HTTP " + res.status);
-  const geo = await res.json();
-  return geo.features
+  let url = `https://api.weather.gov/stations/${stationId}/observations?start=${start}&end=${end}&limit=500`;
+  const features = [];
+  for (let page = 0; url && page < 20; page++) {
+    const res = await fetch(url);
+    if (!res.ok) throw new Error("NWS request failed: HTTP " + res.status);
+    const geo = await res.json();
+    features.push(...geo.features);
+    url = geo.pagination && geo.pagination.next;
+  }
+  return features
     .map(f => ({ t: realInstantToWallEpoch(new Date(f.properties.timestamp)), p: f.properties }))
     .sort((a, b) => a.t - b.t);
 }
